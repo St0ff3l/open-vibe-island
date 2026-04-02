@@ -29,6 +29,9 @@ final class AppModel {
     private let overlayPanelController = OverlayPanelController()
 
     @ObservationIgnored
+    private weak var controlCenterWindowController: ControlCenterWindowController?
+
+    @ObservationIgnored
     private let bridgeServer = DemoBridgeServer()
 
     @ObservationIgnored
@@ -235,6 +238,14 @@ final class AppModel {
             overlayPanelController.show(model: self)
             isOverlayVisible = true
         }
+    }
+
+    func attach(controlCenterWindowController: ControlCenterWindowController) {
+        self.controlCenterWindowController = controlCenterWindowController
+    }
+
+    func showControlCenter() {
+        controlCenterWindowController?.show()
     }
 
     func approveFocusedPermission(_ approved: Bool) {

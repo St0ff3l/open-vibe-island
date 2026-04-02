@@ -108,6 +108,10 @@ struct MenuBarContentView: View {
 
             Divider()
 
+            Button("Open Control Center") {
+                model.showControlCenter()
+            }
+
             Text(model.acceptanceStatusTitle)
                 .font(.subheadline.weight(.semibold))
             Text(model.acceptanceStatusSummary)

@@ -10,7 +10,7 @@ struct ControlCenterView: View {
             detailColumn
         }
         .padding(24)
-        .frame(minWidth: 940, minHeight: 580)
+        .frame(width: 980, height: 640)
         .background(backgroundGradient)
     }
 
