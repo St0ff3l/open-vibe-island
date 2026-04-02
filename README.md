@@ -53,7 +53,22 @@ Build the helper once:
 swift build -c release --product VibeIslandHooks
 ```
 
-Then point Codex at a `hooks.json` file. A minimal `~/.codex/hooks.json` shape looks like:
+Then let the setup tool install or remove the managed Codex hook entries:
+
+```bash
+swift run VibeIslandSetup install --hooks-binary "$(pwd)/.build/release/VibeIslandHooks"
+swift run VibeIslandSetup status --hooks-binary "$(pwd)/.build/release/VibeIslandHooks"
+swift run VibeIslandSetup uninstall
+```
+
+The installer:
+
+- enables `[features].codex_hooks = true` if needed
+- merges Vibe Island hook handlers into `~/.codex/hooks.json` without deleting unrelated hooks
+- writes a small manifest so uninstall can remove only what Vibe Island added
+- creates timestamped backups before rewriting `config.toml` or `hooks.json`
+
+If you want to manage the files yourself, a minimal `~/.codex/hooks.json` shape looks like:
 
 ```json
 {
@@ -121,8 +136,9 @@ The helper reads the Codex hook payload from `stdin`, forwards it to the app bri
 
 - `Package.swift` Swift package entry point for the app and shared core module.
 - `Sources/VibeIslandCore` Shared models, events, mock scenario, and session state reducer.
-- `Sources/VibeIslandCore` also contains the wire protocol, local socket clients, Codex hook models, and bridge server.
+- `Sources/VibeIslandCore` also contains the wire protocol, local socket clients, Codex hook models, hook installer logic, and bridge server.
 - `Sources/VibeIslandHooks` Hook executable for Codex.
+- `Sources/VibeIslandSetup` Installer CLI for Codex feature and hook setup.
 - `Sources/VibeIslandApp` SwiftUI app shell, menu bar entry, and overlay panel controller.
 - `Tests/VibeIslandCoreTests` Core logic tests.
 - `docs/product.md` Product scope, MVP boundary, and roadmap.

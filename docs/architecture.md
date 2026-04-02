@@ -39,6 +39,7 @@ The current bridge server still lives inside the app process for convenience, bu
 2. Codex invokes a repo-built `VibeIslandHooks` helper from `hooks.json`.
 3. The helper forwards hook payloads to the app bridge over a Unix socket.
 4. The app consumes normalized `AgentEvent` values from that socket and sends approval commands back over the same bridge.
+5. A separate setup CLI owns `config.toml` and `hooks.json` edits so installation and rollback stay explicit and reversible.
 
 For `PreToolUse`, the hook helper waits for the bridge response. If the island denies the request, the helper writes the blocking JSON shape that Codex already understands. If the app is unavailable, the helper fails open so the terminal flow remains unchanged.
 

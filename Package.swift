@@ -17,6 +17,10 @@ let package = Package(
             targets: ["VibeIslandHooks"]
         ),
         .executable(
+            name: "VibeIslandSetup",
+            targets: ["VibeIslandSetup"]
+        ),
+        .executable(
             name: "VibeIslandApp",
             targets: ["VibeIslandApp"]
         ),
@@ -27,6 +31,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "VibeIslandHooks",
+            dependencies: ["VibeIslandCore"]
+        ),
+        .executableTarget(
+            name: "VibeIslandSetup",
             dependencies: ["VibeIslandCore"]
         ),
         .executableTarget(

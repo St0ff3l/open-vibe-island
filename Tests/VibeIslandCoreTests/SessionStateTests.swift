@@ -196,6 +196,111 @@ struct SessionStateTests {
         let response = try await requestTask.value
         #expect(response == .codexHookDirective(.deny(reason: "Permission denied in Vibe Island.")))
     }
+
+    @Test
+    func codexHookInstallerMergesManagedGroupsWithoutDroppingUnrelatedHooks() throws {
+        let existing = """
+        {
+          "hooks": {
+            "Stop": [
+              {
+                "hooks": [
+                  {
+                    "type": "command",
+                    "command": "/usr/bin/true",
+                    "statusMessage": "Other hook"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        """.data(using: .utf8)
+
+        let mutation = try CodexHookInstaller.installHooksJSON(
+            existingData: existing,
+            hookCommand: "'/tmp/VibeIslandHooks'"
+        )
+
+        #expect(mutation.changed)
+        let root = try jsonObject(from: mutation.contents)
+        let hooks = root["hooks"] as? [String: Any]
+        let stopGroups = hooks?["Stop"] as? [[String: Any]]
+        let stopCommands = stopGroups?
+            .compactMap { $0["hooks"] as? [[String: Any]] }
+            .flatMap { $0 }
+            .compactMap { $0["command"] as? String } ?? []
+
+        #expect(stopCommands.contains("/usr/bin/true"))
+        #expect(stopCommands.contains("'/tmp/VibeIslandHooks'"))
+
+        let preToolGroups = hooks?["PreToolUse"] as? [[String: Any]]
+        #expect(preToolGroups?.contains(where: { $0["matcher"] as? String == "Bash" }) == true)
+    }
+
+    @Test
+    func codexHookInstallerUninstallRemovesOnlyManagedHooks() throws {
+        let existing = """
+        {
+          "hooks": {
+            "Stop": [
+              {
+                "hooks": [
+                  {
+                    "type": "command",
+                    "command": "'/tmp/VibeIslandHooks'",
+                    "statusMessage": "Managed by Vibe Island"
+                  },
+                  {
+                    "type": "command",
+                    "command": "/usr/bin/true",
+                    "statusMessage": "Other hook"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        """.data(using: .utf8)
+
+        let mutation = try CodexHookInstaller.uninstallHooksJSON(
+            existingData: existing,
+            managedCommand: "'/tmp/VibeIslandHooks'"
+        )
+
+        #expect(mutation.changed)
+        #expect(mutation.hasRemainingHooks)
+
+        let root = try jsonObject(from: mutation.contents)
+        let hooks = root["hooks"] as? [String: Any]
+        let stopGroups = hooks?["Stop"] as? [[String: Any]]
+        let stopCommands = stopGroups?
+            .compactMap { $0["hooks"] as? [[String: Any]] }
+            .flatMap { $0 }
+            .compactMap { $0["command"] as? String } ?? []
+
+        #expect(stopCommands == ["/usr/bin/true"])
+    }
+
+    @Test
+    func codexHookInstallerEnablesAndRemovesFeatureFlag() {
+        let initialConfig = """
+        personality = "pragmatic"
+
+        [projects."/tmp"]
+        trust_level = "trusted"
+        """
+
+        let enabled = CodexHookInstaller.enableCodexHooksFeature(in: initialConfig)
+        #expect(enabled.changed)
+        #expect(enabled.featureEnabledByInstaller)
+        #expect(enabled.contents.contains("[features]"))
+        #expect(enabled.contents.contains("codex_hooks = true"))
+
+        let removed = CodexHookInstaller.disableCodexHooksFeatureIfManaged(in: enabled.contents)
+        #expect(removed.changed)
+        #expect(!removed.contents.contains("codex_hooks = true"))
+    }
 }
 
 private enum SessionStateTestError: Error {
@@ -228,4 +333,13 @@ private extension AgentEvent {
             false
         }
     }
+}
+
+private func jsonObject(from data: Data?) throws -> [String: Any] {
+    guard let data else {
+        return [:]
+    }
+
+    let object = try JSONSerialization.jsonObject(with: data)
+    return object as? [String: Any] ?? [:]
 }
