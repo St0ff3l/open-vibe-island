@@ -4,6 +4,9 @@ import VibeIslandCore
 struct ControlCenterView: View {
     var model: AppModel
 
+    @State
+    private var isShowingRecentSessions = false
+
     var body: some View {
         HStack(spacing: 24) {
             sessionColumn
@@ -39,23 +42,45 @@ struct ControlCenterView: View {
 
                 acceptanceCard
                 setupCard
+                overlayCard
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Sessions")
-                        .font(.headline)
+                    HStack {
+                        Text("Live Sessions")
+                            .font(.headline)
+                        Spacer()
+                        if model.hiddenSessionCount > 0 {
+                            Text("\(model.hiddenSessionCount) recent hidden")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(model.sessions) { session in
-                            Button {
-                                model.select(sessionID: session.id)
-                            } label: {
-                                SessionRowView(
-                                    session: session,
-                                    isSelected: session.id == model.focusedSession?.id
-                                )
-                            }
-                            .buttonStyle(.plain)
+                        ForEach(model.surfacedSessions) { session in
+                            sessionButton(for: session)
                         }
+                    }
+
+                    if !model.recentSessions.isEmpty {
+                        DisclosureGroup(isExpanded: $isShowingRecentSessions) {
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                ForEach(model.recentSessions) { session in
+                                    sessionButton(for: session)
+                                }
+                            }
+                            .padding(.top, 10)
+                        } label: {
+                            Text("Recent Sessions")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .tint(.white)
+                    }
+
+                    if model.surfacedSessions.isEmpty {
+                        Text("No live Codex sessions are surfaced yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -63,6 +88,18 @@ struct ControlCenterView: View {
         .scrollIndicators(.visible)
         .padding(.trailing, 6)
         .frame(maxWidth: 360, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func sessionButton(for session: AgentSession) -> some View {
+        Button {
+            model.select(sessionID: session.id)
+        } label: {
+            SessionRowView(
+                session: session,
+                isSelected: session.id == model.focusedSession?.id
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var setupCard: some View {
@@ -125,6 +162,76 @@ struct ControlCenterView: View {
         )
     }
 
+    private var overlayCard: some View {
+        @Bindable var model = model
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Overlay Placement")
+                        .font(.headline)
+                    Text(model.overlayPlacementDiagnostics?.targetScreenName ?? "No display detected")
+                        .font(.subheadline.weight(.medium))
+                    Text(model.overlayPlacementDiagnostics?.modeDescription ?? "Waiting for display diagnostics.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                Circle()
+                    .fill((model.overlayPlacementDiagnostics?.mode == .notch ? Color.mint : Color.blue))
+                    .frame(width: 10, height: 10)
+            }
+
+            Picker("Display", selection: $model.overlayDisplaySelectionID) {
+                ForEach(model.overlayDisplayOptions) { option in
+                    Text(option.title).tag(option.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if let option = model.overlayDisplayOptions.first(where: { $0.id == model.overlayDisplaySelectionID }) {
+                Text(option.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let diagnostics = model.overlayPlacementDiagnostics {
+                VStack(alignment: .leading, spacing: 10) {
+                    metadataRow(title: "Target", value: diagnostics.targetDescription)
+                    metadataRow(title: "Screen frame", value: diagnostics.screenFrameDescription)
+                    metadataRow(title: "Visible frame", value: diagnostics.visibleFrameDescription)
+                    metadataRow(title: "Safe area", value: diagnostics.safeAreaDescription)
+                    metadataRow(title: "Overlay frame", value: diagnostics.overlayFrameDescription)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Refresh Displays") {
+                    model.refreshOverlayDisplayConfiguration()
+                }
+                .buttonStyle(.bordered)
+
+                Button(model.isOverlayVisible ? "Reposition Overlay" : "Show Overlay") {
+                    if model.isOverlayVisible {
+                        model.refreshOverlayPlacement()
+                    } else {
+                        model.showOverlay()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.08))
+        )
+    }
+
     private var acceptanceCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
@@ -172,7 +279,7 @@ struct ControlCenterView: View {
 
                 Button("Open Overlay") {
                     if !model.isOverlayVisible {
-                        model.toggleOverlay()
+                        model.showOverlay()
                     }
                 }
                 .buttonStyle(.bordered)
@@ -402,15 +509,15 @@ private struct SessionRowView: View {
                         .font(.headline)
                     Spacer(minLength: 12)
                     HStack(spacing: 6) {
-                        if session.isDemoSession {
-                            Text("DEMO")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.orange)
-                        }
-
                         Text(session.tool.shortName)
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
+
+                        if let terminalBadge = session.spotlightTerminalBadge {
+                            Text(terminalBadge)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -424,6 +531,10 @@ private struct SessionRowView: View {
                     if let currentTool = session.spotlightCurrentToolLabel {
                         Text("·")
                         Text(currentTool)
+                    }
+                    if let terminalBadge = session.spotlightTerminalBadge {
+                        Text("·")
+                        Text(terminalBadge)
                     }
                     Text("·")
                     Text(session.updatedAt, style: .relative)
@@ -453,7 +564,7 @@ private struct SessionRowView: View {
         case .waitingForAnswer:
             .yellow
         case .completed:
-            .blue
+            session.jumpTarget != nil ? .white : .blue
         }
     }
 }

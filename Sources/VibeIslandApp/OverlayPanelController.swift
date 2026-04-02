@@ -9,20 +9,38 @@ final class OverlayPanelController {
         panel?.isVisible == true
     }
 
-    func show(model: AppModel) {
+    func availableDisplayOptions() -> [OverlayDisplayOption] {
+        OverlayDisplayResolver.availableDisplayOptions()
+    }
+
+    func show(model: AppModel, preferredScreenID: String?) -> OverlayPlacementDiagnostics? {
         let panel = panel ?? makePanel(model: model)
         self.panel = panel
-        position(panel: panel)
+        let diagnostics = position(panel: panel, preferredScreenID: preferredScreenID)
         panel.orderFrontRegardless()
+        return diagnostics
     }
 
     func hide() {
         panel?.orderOut(nil)
     }
 
+    func reposition(preferredScreenID: String?) -> OverlayPlacementDiagnostics? {
+        guard let panel else {
+            return placementDiagnostics(preferredScreenID: preferredScreenID)
+        }
+
+        return position(panel: panel, preferredScreenID: preferredScreenID)
+    }
+
+    func placementDiagnostics(preferredScreenID: String?) -> OverlayPlacementDiagnostics? {
+        let panelSize = panel?.frame.size ?? OverlayDisplayResolver.defaultPanelSize
+        return OverlayDisplayResolver.diagnostics(preferredScreenID: preferredScreenID, panelSize: panelSize)
+    }
+
     private func makePanel(model: AppModel) -> IslandPanel {
         let panel = IslandPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 256),
+            contentRect: NSRect(origin: .zero, size: OverlayDisplayResolver.defaultPanelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -41,21 +59,16 @@ final class OverlayPanelController {
         return panel
     }
 
-    private func position(panel: NSPanel) {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let screen else {
-            return
+    private func position(panel: NSPanel, preferredScreenID: String?) -> OverlayPlacementDiagnostics? {
+        guard let diagnostics = OverlayDisplayResolver.diagnostics(
+            preferredScreenID: preferredScreenID,
+            panelSize: panel.frame.size
+        ) else {
+            return nil
         }
 
-        let size = panel.frame.size
-        let visibleFrame = screen.visibleFrame
-        let frame = NSRect(
-            x: visibleFrame.midX - (size.width / 2),
-            y: visibleFrame.maxY - size.height - 18,
-            width: size.width,
-            height: size.height
-        )
-        panel.setFrame(frame, display: true)
+        panel.setFrame(diagnostics.overlayFrame, display: true)
+        return diagnostics
     }
 }
 

@@ -6,6 +6,10 @@ import VibeIslandCore
 @MainActor
 @Observable
 final class AppModel {
+    private static let overlayDisplayPreferenceDefaultsKey = "overlay.display.preference"
+    private static let surfacedSessionLimit = 4
+    private static let recentSessionFallbackWindow: TimeInterval = 15 * 60
+
     struct AcceptanceStep: Identifiable {
         let id: String
         let title: String
@@ -21,6 +25,18 @@ final class AppModel {
     var lastActionMessage = "Waiting for Codex hook events..."
     var codexHookStatus: CodexHookInstallationStatus?
     var hooksBinaryURL: URL?
+    var overlayDisplayOptions: [OverlayDisplayOption] = []
+    var overlayPlacementDiagnostics: OverlayPlacementDiagnostics?
+    var overlayDisplaySelectionID = OverlayDisplayOption.automaticID {
+        didSet {
+            guard overlayDisplaySelectionID != oldValue else {
+                return
+            }
+
+            persistOverlayDisplayPreference()
+            refreshOverlayPlacement()
+        }
+    }
 
     @ObservationIgnored
     private var bridgeTask: Task<Void, Never>?
@@ -56,15 +72,33 @@ final class AppModel {
     private var codexSessionPersistenceTask: Task<Void, Never>?
 
     init() {
+        overlayDisplaySelectionID = UserDefaults.standard.string(
+            forKey: Self.overlayDisplayPreferenceDefaultsKey
+        ) ?? OverlayDisplayOption.automaticID
+
         codexRolloutWatcher.eventHandler = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.applyTrackedEvent(event, updateLastActionMessage: false)
             }
         }
+
+        refreshOverlayDisplayConfiguration()
     }
 
     var sessions: [AgentSession] {
         state.sessions
+    }
+
+    var surfacedSessions: [AgentSession] {
+        sessionBuckets.primary
+    }
+
+    var recentSessions: [AgentSession] {
+        sessionBuckets.overflow
+    }
+
+    var hiddenSessionCount: Int {
+        recentSessions.count
     }
 
     var codexHooksInstalled: Bool {
@@ -101,7 +135,7 @@ final class AppModel {
     }
 
     var focusedSession: AgentSession? {
-        state.session(id: selectedSessionID) ?? state.activeActionableSession ?? state.sessions.first
+        state.session(id: selectedSessionID) ?? surfacedSessions.first ?? state.activeActionableSession ?? state.sessions.first
     }
 
     var hasAnySession: Bool {
@@ -197,6 +231,7 @@ final class AppModel {
         hooksBinaryURL = HooksBinaryLocator.locate()
         refreshCodexHookStatus()
         refreshCodexRolloutTracking()
+        refreshOverlayDisplayConfiguration()
 
         do {
             try bridgeServer.start()
@@ -243,11 +278,51 @@ final class AppModel {
 
     func toggleOverlay() {
         if isOverlayVisible {
-            overlayPanelController.hide()
-            isOverlayVisible = false
+            hideOverlay()
         } else {
-            overlayPanelController.show(model: self)
-            isOverlayVisible = true
+            showOverlay()
+        }
+    }
+
+    func showOverlay() {
+        overlayPlacementDiagnostics = overlayPanelController.show(
+            model: self,
+            preferredScreenID: preferredOverlayScreenID
+        )
+        isOverlayVisible = overlayPanelController.isVisible
+
+        if let overlayPlacementDiagnostics {
+            lastActionMessage = "Overlay showing on \(overlayPlacementDiagnostics.targetScreenName) as \(overlayPlacementDiagnostics.modeDescription.lowercased())."
+        }
+    }
+
+    func hideOverlay() {
+        overlayPanelController.hide()
+        isOverlayVisible = false
+        refreshOverlayPlacement()
+    }
+
+    func refreshOverlayDisplayConfiguration() {
+        overlayDisplayOptions = overlayPanelController.availableDisplayOptions()
+
+        let validSelectionIDs = Set(overlayDisplayOptions.map(\.id))
+        if !validSelectionIDs.contains(overlayDisplaySelectionID) {
+            overlayDisplaySelectionID = OverlayDisplayOption.automaticID
+            return
+        }
+
+        refreshOverlayPlacement()
+    }
+
+    func refreshOverlayPlacement() {
+        if isOverlayVisible {
+            overlayPlacementDiagnostics = overlayPanelController.reposition(
+                preferredScreenID: preferredOverlayScreenID
+            )
+        } else {
+            overlayPlacementDiagnostics = overlayPanelController.placementDiagnostics(
+                preferredScreenID: preferredOverlayScreenID
+            )
         }
     }
 
@@ -296,6 +371,47 @@ final class AppModel {
         } catch {
             lastActionMessage = "Jump failed: \(error.localizedDescription)"
         }
+    }
+
+    func jumpToSession(_ session: AgentSession) {
+        select(sessionID: session.id)
+
+        guard let jumpTarget = session.jumpTarget else {
+            lastActionMessage = "No jump target is available yet."
+            return
+        }
+
+        do {
+            let result = try terminalJumpService.jump(to: jumpTarget)
+            lastActionMessage = result
+            NSApp.activate(ignoringOtherApps: true)
+        } catch {
+            lastActionMessage = "Jump failed: \(error.localizedDescription)"
+        }
+    }
+
+    func approvePermission(for sessionID: String, approved: Bool) {
+        guard let session = state.session(id: sessionID) else {
+            return
+        }
+
+        send(
+            .resolvePermission(sessionID: session.id, approved: approved),
+            userMessage: approved
+                ? "Approving permission for \(session.title)."
+                : "Denying permission for \(session.title)."
+        )
+    }
+
+    func answerQuestion(for sessionID: String, answer: String) {
+        guard let session = state.session(id: sessionID) else {
+            return
+        }
+
+        send(
+            .answerQuestion(sessionID: session.id, answer: answer),
+            userMessage: "Sending answer \"\(answer)\" for \(session.title)."
+        )
     }
 
     func refreshCodexHookStatus() {
@@ -391,10 +507,18 @@ final class AppModel {
     }
 
     private func synchronizeSelection() {
-        if selectedSessionID == nil || state.session(id: selectedSessionID) == nil {
-            selectedSessionID = state.activeActionableSession?.id ?? state.sessions.first?.id
-        } else if let activeAction = state.activeActionableSession {
+        let surfacedIDs = Set(surfacedSessions.map(\.id))
+
+        if let activeAction = state.activeActionableSession {
             selectedSessionID = activeAction.id
+            return
+        }
+
+        guard let selectedSessionID,
+              surfacedIDs.contains(selectedSessionID),
+              state.session(id: selectedSessionID) != nil else {
+            self.selectedSessionID = surfacedSessions.first?.id ?? state.sessions.first?.id
+            return
         }
     }
 
@@ -503,6 +627,105 @@ final class AppModel {
             currentTool: discovered.currentTool ?? existing.currentTool
         )
         return merged.isEmpty ? nil : merged
+    }
+
+    private var preferredOverlayScreenID: String? {
+        overlayDisplaySelectionID == OverlayDisplayOption.automaticID
+            ? nil
+            : overlayDisplaySelectionID
+    }
+
+    private var sessionBuckets: (primary: [AgentSession], overflow: [AgentSession]) {
+        let now = Date.now
+        let rankedSessions = state.sessions.sorted { lhs, rhs in
+            let lhsScore = displayPriority(for: lhs, now: now)
+            let rhsScore = displayPriority(for: rhs, now: now)
+
+            if lhsScore == rhsScore {
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+                }
+
+                return lhs.updatedAt > rhs.updatedAt
+            }
+
+            return lhsScore > rhsScore
+        }
+
+        let surfaced = rankedSessions.filter { shouldSurface($0, now: now) }
+        let primary = Array(surfaced.prefix(Self.surfacedSessionLimit))
+        let primaryIDs = Set(primary.map(\.id))
+        let overflow = rankedSessions.filter { !primaryIDs.contains($0.id) }
+        return (primary, overflow)
+    }
+
+    private func shouldSurface(_ session: AgentSession, now: Date) -> Bool {
+        if session.phase.requiresAttention {
+            return true
+        }
+
+        if session.codexMetadata?.currentTool?.isEmpty == false {
+            return true
+        }
+
+        if session.jumpTarget != nil {
+            return true
+        }
+
+        return session.updatedAt >= now.addingTimeInterval(-Self.recentSessionFallbackWindow)
+    }
+
+    private func displayPriority(for session: AgentSession, now: Date) -> Int {
+        var score = 0
+
+        if session.phase.requiresAttention {
+            score += 10_000
+        }
+
+        if session.codexMetadata?.currentTool?.isEmpty == false {
+            score += 6_000
+        }
+
+        if session.jumpTarget != nil {
+            score += 4_000
+        }
+
+        switch session.phase {
+        case .running:
+            score += 2_000
+        case .waitingForApproval:
+            score += 1_500
+        case .waitingForAnswer:
+            score += 1_200
+        case .completed:
+            score += 600
+        }
+
+        let age = now.timeIntervalSince(session.updatedAt)
+        switch age {
+        case ..<120:
+            score += 500
+        case ..<900:
+            score += 250
+        case ..<3_600:
+            score += 120
+        case ..<21_600:
+            score += 40
+        default:
+            break
+        }
+
+        return score
+    }
+
+    private func persistOverlayDisplayPreference() {
+        let defaults = UserDefaults.standard
+
+        if overlayDisplaySelectionID == OverlayDisplayOption.automaticID {
+            defaults.removeObject(forKey: Self.overlayDisplayPreferenceDefaultsKey)
+        } else {
+            defaults.set(overlayDisplaySelectionID, forKey: Self.overlayDisplayPreferenceDefaultsKey)
+        }
     }
 
     private func scheduleCodexSessionPersistence() {

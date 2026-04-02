@@ -70,7 +70,7 @@ extension AgentSession {
         case .waitingForAnswer:
             return "Question"
         case .completed:
-            return "Completed"
+            return jumpTarget != nil ? "Idle" : "Completed"
         }
     }
 
@@ -80,6 +80,10 @@ extension AgentSession {
         }
 
         return "\(jumpTarget.terminalApp) · \(jumpTarget.workspaceName)"
+    }
+
+    var spotlightTerminalBadge: String? {
+        jumpTarget?.terminalApp
     }
 }
 

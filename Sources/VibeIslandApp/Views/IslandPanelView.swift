@@ -7,134 +7,49 @@ struct IslandPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("ONE GLANCE")
+                Text("LIVE SESSIONS")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(model.state.attentionCount) attention")
+                Text("\(model.surfacedSessions.count) shown · \(model.state.attentionCount) attention")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
 
-            if let session = model.focusedSession {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(session.title)
-                                .font(.headline)
-
-                            HStack(spacing: 8) {
-                                statusBadge(
-                                    title: session.tool.displayName,
-                                    tint: .white.opacity(0.14)
-                                )
-
-                                statusBadge(
-                                    title: session.spotlightStatusLabel,
-                                    tint: phaseTint(for: session.phase)
-                                )
+            if model.surfacedSessions.isEmpty {
+                Text("Waiting for Codex sessions.")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.surfacedSessions) { session in
+                        IslandSessionRow(
+                            session: session,
+                            isSelected: session.id == model.focusedSession?.id,
+                            onSelect: { model.select(sessionID: session.id) },
+                            onJump: { model.jumpToSession(session) },
+                            onApprove: { approved in
+                                model.approvePermission(for: session.id, approved: approved)
+                            },
+                            onAnswer: { answer in
+                                model.answerQuestion(for: session.id, answer: answer)
                             }
-                        }
-
-                        Spacer(minLength: 16)
-
-                        if let trackingLabel = session.spotlightTrackingLabel {
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Text("tracking")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.secondary)
-                                Text(trackingLabel)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.82))
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-
-                    Text(session.spotlightPrimaryText)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(3)
-
-                    if let secondaryText = session.spotlightSecondaryText {
-                        Text(secondaryText)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.72))
-                            .lineLimit(2)
-                    }
-
-                    HStack(spacing: 8) {
-                        if let currentTool = session.spotlightCurrentToolLabel {
-                            statusBadge(title: currentTool, tint: Color.cyan.opacity(0.22))
-                        }
-
-                        if let terminalLabel = session.spotlightTerminalLabel {
-                            statusBadge(title: terminalLabel, tint: Color.white.opacity(0.12))
-                        }
-
-                        Spacer(minLength: 0)
-
-                        Text(session.updatedAt, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let request = session.permissionRequest {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Approval needed for \(request.title.lowercased())")
-                                .font(.caption)
-                                .foregroundStyle(.orange.opacity(0.92))
-
-                            HStack(spacing: 10) {
-                                Button(request.secondaryActionTitle) {
-                                    model.approveFocusedPermission(false)
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button(request.primaryActionTitle) {
-                                    model.approveFocusedPermission(true)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-                        }
-                    } else if let prompt = session.questionPrompt {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Codex is waiting for a quick answer.")
-                                .font(.caption)
-                                .foregroundStyle(.yellow.opacity(0.92))
-
-                            HStack(spacing: 10) {
-                                ForEach(prompt.options.prefix(2), id: \.self) { option in
-                                    Button(option) {
-                                        model.answerFocusedQuestion(option)
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-                            }
-                        }
-                    } else {
-                        HStack {
-                            Text(session.phase == .completed
-                                ? "Turn completed in terminal."
-                                : "Keep working in terminal. Jump back when needed.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Jump Back") {
-                                model.jumpToFocusedSession()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(session.jumpTarget == nil)
-                        }
+                        )
                     }
                 }
-            } else {
-                Text("Waiting for Codex hook events.")
-                    .foregroundStyle(.secondary)
+
+                if model.hiddenSessionCount > 0 {
+                    Text("+\(model.hiddenSessionCount) recent session(s) are hidden from the island. Open Control Center to inspect them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .padding(20)
-        .frame(width: 520, height: 256, alignment: .topLeading)
+        .padding(18)
+        .frame(
+            width: OverlayDisplayResolver.defaultPanelSize.width,
+            height: OverlayDisplayResolver.defaultPanelSize.height,
+            alignment: .topLeading
+        )
         .background(panelBackground)
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -155,8 +70,122 @@ struct IslandPanelView: View {
                 )
             )
     }
+}
 
-    private func statusBadge(title: String, tint: Color) -> some View {
+private struct IslandSessionRow: View {
+    let session: AgentSession
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onJump: () -> Void
+    let onApprove: (Bool) -> Void
+    let onAnswer: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onSelect) {
+                HStack(alignment: .top, spacing: 12) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 10, height: 10)
+                        .padding(.top, 6)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(session.title)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        Text(session.spotlightPrimaryText)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    VStack(alignment: .trailing, spacing: 8) {
+                        HStack(spacing: 8) {
+                            badge(session.tool.displayName, tint: .white.opacity(0.12))
+                            if let terminalBadge = session.spotlightTerminalBadge {
+                                badge(terminalBadge, tint: .white.opacity(0.10))
+                            }
+                            badge(session.spotlightStatusLabel, tint: statusColor.opacity(0.22))
+                        }
+
+                        Text(session.updatedAt, style: .relative)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            if isSelected {
+                selectedActionRow
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(isSelected ? Color.white.opacity(0.10) : Color.white.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(isSelected ? .white.opacity(0.16) : .white.opacity(0.06))
+        )
+    }
+
+    @ViewBuilder
+    private var selectedActionRow: some View {
+        if let request = session.permissionRequest {
+            HStack(spacing: 10) {
+                Text(request.summary)
+                    .font(.caption)
+                    .foregroundStyle(.orange.opacity(0.92))
+                    .lineLimit(2)
+                Spacer(minLength: 12)
+                Button(request.secondaryActionTitle) {
+                    onApprove(false)
+                }
+                .buttonStyle(.bordered)
+                Button(request.primaryActionTitle) {
+                    onApprove(true)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        } else if let prompt = session.questionPrompt {
+            HStack(spacing: 10) {
+                Text(prompt.title)
+                    .font(.caption)
+                    .foregroundStyle(.yellow.opacity(0.92))
+                    .lineLimit(2)
+                Spacer(minLength: 12)
+                ForEach(prompt.options.prefix(2), id: \.self) { option in
+                    Button(option) {
+                        onAnswer(option)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        } else {
+            HStack {
+                Text(session.phase == .completed
+                    ? "Idle in terminal. Jump back when needed."
+                    : "Live in terminal. Keep flow here and jump back when needed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Button("Jump") {
+                    onJump()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(session.jumpTarget == nil)
+            }
+        }
+    }
+
+    private func badge(_ title: String, tint: Color) -> some View {
         Text(title)
             .font(.caption.weight(.medium))
             .padding(.horizontal, 10)
@@ -164,16 +193,16 @@ struct IslandPanelView: View {
             .background(tint, in: Capsule())
     }
 
-    private func phaseTint(for phase: SessionPhase) -> Color {
-        switch phase {
+    private var statusColor: Color {
+        switch session.phase {
         case .running:
-            return Color.mint.opacity(0.22)
+            return .mint
         case .waitingForApproval:
-            return Color.orange.opacity(0.24)
+            return .orange
         case .waitingForAnswer:
-            return Color.yellow.opacity(0.24)
+            return .yellow
         case .completed:
-            return Color.blue.opacity(0.24)
+            return session.jumpTarget != nil ? .white : .blue
         }
     }
 }
