@@ -39,7 +39,9 @@ Keep all work incremental, reviewable, and reversible. Every meaningful round of
 
 ## Reproduction Scope
 
-- Reproduction work is currently limited to these four surfaces only: `claude code`, `codex`, `terminal`, and `ghostty`.
+- Reproduction work is currently limited to these four surfaces only: `Claude Code`, `Codex`, `Terminal.app`, and `Ghostty`.
+- Treat those four surfaces as the only supported product boundary for now.
+- Do not count partial or experimental code paths for other terminals or agents as supported scope.
 - Do not broaden the reproduction scope to other tools, runtimes, platforms, or environments unless the user explicitly asks to expand it.
 
 ## Verification

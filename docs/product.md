@@ -19,9 +19,22 @@ Deliver a native macOS companion that proves the end-to-end loop:
 3. Handle permission approval and question answering
 4. Bring the user back to the correct terminal session
 
+## Supported Boundary
+
+For now, the product boundary is fixed to these four surfaces only:
+
+- `Codex`
+- `Claude Code`
+- `Terminal.app`
+- `Ghostty`
+
+Anything else is explicitly out of scope until the user chooses to expand the boundary.
+
 ## v0.1 Scope
 
-- One agent integration only
+- One real agent integration only: `Codex`
+- One real terminal verification target pair: `Terminal.app` and `Ghostty`
+- `Claude Code` remains in product scope, but not in implementation scope yet
 - Mock event source first, then replace with real hooks
 - One active permission request at a time
 - Basic session list and detail panel
@@ -30,6 +43,8 @@ Deliver a native macOS companion that proves the end-to-end loop:
 ## Deferred
 
 - Multi-agent support from day one
+- Expanding support to more terminal apps
+- Expanding support to more code agents
 - Pixel-perfect terminal split targeting across many terminal apps
 - Sound packs, themes, and onboarding polish
 - Analytics, accounts, sync, or cloud features

@@ -14,11 +14,27 @@ Initial native scaffold is in place. The repository now contains a buildable mac
 - a local Unix-socket bridge between the app and external hook processes
 - core tests for session state transitions
 
+## Supported Scope
+
+The repository support boundary is intentionally narrow for now.
+
+- Supported code agents: `Codex`, `Claude Code`
+- Supported terminals: `Terminal.app`, `Ghostty`
+- Everything else is out of scope until the user explicitly expands the boundary
+
+Current implementation status inside that boundary:
+
+- `Codex` is the only real adapter wired end to end today
+- `Ghostty` and `Terminal.app` are the only terminals that count as supported verification targets
+- `Claude Code` is still inside the product boundary, but does not have a real adapter yet
+
+There may be partial or best-effort code paths for other terminals in the codebase. They are not part of the supported scope, are not acceptance targets, and should not drive roadmap decisions right now.
+
 ## Product Direction
 
 - Native macOS app built with SwiftUI and AppKit where needed.
 - Local-first communication over Unix sockets or equivalent IPC.
-- Support multiple coding agents over time, starting with one narrow integration.
+- Keep the supported surface narrow until the first Codex workflow is stable.
 - Focus on interaction, not just passive monitoring.
 
 ## Initial Milestones
@@ -151,8 +167,8 @@ The helper reads the Codex hook payload from `stdin`, forwards it to the app bri
 
 Codex hook ingestion now captures terminal hints from the hook process environment, such as `TERM_PROGRAM`, `ITERM_SESSION_ID`, and Ghostty-specific variables. The island uses those hints to power a best-effort `Jump` action:
 
-- store terminal-specific locators such as iTerm session id, Ghostty terminal id, and Terminal tty when available
-- focus the matching iTerm session, Ghostty terminal, or Terminal tab before falling back
+- store terminal-specific locators such as Ghostty terminal id and Terminal tty when available
+- focus the matching Ghostty terminal or Terminal tab before falling back
 - reopen the recorded working directory in that terminal as the final fallback
 - keep the existing CLI workflow unchanged even when exact pane restoration is not yet available
 
@@ -172,6 +188,7 @@ Codex hook ingestion now captures terminal hints from the hook process environme
 
 - Keep the app local-first. No server dependency for core behavior.
 - Build narrow slices end to end before adding more integrations.
+- Treat `Codex`, `Claude Code`, `Terminal.app`, and `Ghostty` as the only supported surface area for now.
 - Prefer native platform APIs over cross-platform abstractions.
 - Treat hooks, IPC, and focus-switching behavior as first-class engineering concerns.
 - Keep the Terminal entrypoint unchanged for users. The app should attach to Codex, not replace it.
