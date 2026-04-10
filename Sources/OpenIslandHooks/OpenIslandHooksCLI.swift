@@ -17,8 +17,10 @@ struct OpenIslandHooksCLI {
 
         var isClaudeFormat: Bool {
             switch self {
-            case .claude, .qoder, .qwen, .factory, .droid, .codebuddy:
+            case .claude, .qoder, .factory, .droid, .codebuddy:
                 return true
+            case .qwen:
+                return false // Or true if you want to consider it claude format
             case .codex, .cursor:
                 return false
             }
@@ -52,7 +54,7 @@ struct OpenIslandHooksCLI {
                 if let output = try CodexHookOutputEncoder.standardOutput(for: response) {
                     FileHandle.standardOutput.write(output)
                 }
-            case .claude, .qoder, .qwen, .factory, .droid, .codebuddy:
+            case .claude, .qoder, .factory, .droid, .codebuddy:
                 var payload = try decoder
                     .decode(ClaudeHookPayload.self, from: input)
                     .withRuntimeContext(environment: ProcessInfo.processInfo.environment)
@@ -70,6 +72,17 @@ struct OpenIslandHooksCLI {
                 if let output = try ClaudeHookOutputEncoder.standardOutput(for: response) {
                     FileHandle.standardOutput.write(output)
                 }
+            case .qwen:
+                let payload = try decoder.decode(QwenHookPayload.self, from: input)
+                guard (try? client.send(.processQwenHook(payload), timeout: 45)) != nil else {
+                    logStderr("bridge unavailable for qwen hook")
+                    return
+                }
+                
+                // Just send an empty JSON object back or whatever is expected to not block
+                let output = try JSONEncoder().encode(BridgeResponse.acknowledged)
+                FileHandle.standardOutput.write(output)
+                FileHandle.standardOutput.write(Data("\n".utf8))
             case .cursor:
                 let payload = try decoder.decode(CursorHookPayload.self, from: input)
 

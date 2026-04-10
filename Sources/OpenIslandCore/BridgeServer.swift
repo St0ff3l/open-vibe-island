@@ -431,6 +431,9 @@ public final class BridgeServer: @unchecked Sendable {
 
         case let .processCursorHook(payload):
             handleCursorHook(payload, from: clientID)
+
+        case let .processQwenHook(payload):
+            handleQwenHook(payload, from: clientID)
         }
     }
 
@@ -621,16 +624,18 @@ public final class BridgeServer: @unchecked Sendable {
             }
 
             let summary = payload.toolName.map { "Running \($0)" } ?? "Running Claude tool"
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: payload.toolInputPreview.map { "\(summary): \($0)" } ?? summary,
-                        phase: .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: payload.toolInputPreview.map { "\(summary): \($0)" } ?? summary,
+                            phase: .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .permissionRequest:
@@ -716,16 +721,18 @@ public final class BridgeServer: @unchecked Sendable {
                 return payload.implicitStartSummary
             }()
 
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: summary,
-                        phase: .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: summary,
+                            phase: .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .postToolUseFailure:
@@ -735,16 +742,18 @@ public final class BridgeServer: @unchecked Sendable {
             synchronizeClaudeMetadata(for: payload)
             pendingClaudeToolContexts.removeValue(forKey: payload.permissionCorrelationKey)
 
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: payload.error ?? "Claude tool failed.",
-                        phase: payload.isInterrupt == true ? .completed : .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: payload.error ?? "Claude tool failed.",
+                            phase: payload.isInterrupt == true ? .completed : .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .permissionDenied:
@@ -778,16 +787,18 @@ public final class BridgeServer: @unchecked Sendable {
                 notificationPhase = currentPhase
             }
 
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: payload.notificationPreview ?? payload.implicitStartSummary,
-                        phase: notificationPhase,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: payload.notificationPreview ?? payload.implicitStartSummary,
+                            phase: notificationPhase,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .stop:
@@ -799,16 +810,29 @@ public final class BridgeServer: @unchecked Sendable {
             // Turn is complete — all subagents from this turn must be finished.
             clearAllActiveSubagents(fromSession: payload.sessionID)
 
-            emit(
-                .sessionCompleted(
-                    SessionCompleted(
-                        sessionID: payload.sessionID,
-                        summary: payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Claude completed the turn.",
-                        timestamp: .now,
-                        isInterrupt: payload.isInterrupt
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Claude completed the turn.",
+                            timestamp: .now,
+                            isInterrupt: payload.isInterrupt
+                        )
                     )
                 )
-            )
+            } else {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Qwen completed the turn.",
+                            timestamp: .now,
+                            isInterrupt: payload.isInterrupt
+                        )
+                    )
+                )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .stopFailure:
@@ -820,16 +844,29 @@ public final class BridgeServer: @unchecked Sendable {
             // Turn failed — all subagents from this turn must be finished.
             clearAllActiveSubagents(fromSession: payload.sessionID)
 
-            emit(
-                .sessionCompleted(
-                    SessionCompleted(
-                        sessionID: payload.sessionID,
-                        summary: payload.error ?? payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Claude failed to finish the turn.",
-                        timestamp: .now,
-                        isInterrupt: payload.isInterrupt
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: payload.error ?? payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Claude failed to finish the turn.",
+                            timestamp: .now,
+                            isInterrupt: payload.isInterrupt
+                        )
                     )
                 )
-            )
+            } else {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: payload.error ?? payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Qwen failed to finish the turn.",
+                            timestamp: .now,
+                            isInterrupt: payload.isInterrupt
+                        )
+                    )
+                )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .subagentStart:
@@ -851,16 +888,18 @@ public final class BridgeServer: @unchecked Sendable {
             }
 
             let summary = payload.agentType.map { "Started \($0) subagent." } ?? "Started Claude subagent."
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: summary,
-                        phase: .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: summary,
+                            phase: .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .subagentStop:
@@ -875,16 +914,18 @@ public final class BridgeServer: @unchecked Sendable {
             let summary = payload.lastAssistantMessage ?? payload.assistantMessagePreview
                 ?? payload.agentType.map { "Finished \($0) subagent." }
                 ?? "Finished Claude subagent."
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: summary,
-                        phase: .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: summary,
+                            phase: .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .preCompact:
@@ -892,16 +933,18 @@ public final class BridgeServer: @unchecked Sendable {
             synchronizeClaudeJumpTarget(for: payload)
             synchronizeClaudeMetadata(for: payload)
 
-            emit(
-                .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: payload.sessionID,
-                        summary: "Claude is compacting the conversation.",
-                        phase: .running,
-                        timestamp: .now
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .activityUpdated(
+                        SessionActivityUpdated(
+                            sessionID: payload.sessionID,
+                            summary: "Claude is compacting the conversation.",
+                            phase: .running,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
+            }
             send(.response(.acknowledged), to: clientID)
 
         case .sessionEnd:
@@ -913,17 +956,31 @@ public final class BridgeServer: @unchecked Sendable {
             // Session is ending — clean up any lingering subagents.
             clearAllActiveSubagents(fromSession: payload.sessionID)
 
-            emit(
-                .sessionCompleted(
-                    SessionCompleted(
-                        sessionID: payload.sessionID,
-                        summary: "Claude session ended.",
-                        timestamp: .now,
-                        isInterrupt: true,
-                        isSessionEnd: true
+            if payload.resolvedAgentTool != .qwenCode {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: "Claude session ended.",
+                            timestamp: .now,
+                            isInterrupt: true,
+                            isSessionEnd: true
+                        )
                     )
                 )
-            )
+            } else {
+                emit(
+                    .sessionCompleted(
+                        SessionCompleted(
+                            sessionID: payload.sessionID,
+                            summary: "Qwen session ended.",
+                            timestamp: .now,
+                            isInterrupt: true,
+                            isSessionEnd: true
+                        )
+                    )
+                )
+            }
             send(.response(.acknowledged), to: clientID)
         }
     }
@@ -1087,6 +1144,104 @@ public final class BridgeServer: @unchecked Sendable {
             )
             send(.response(.acknowledged), to: clientID)
         }
+    }
+
+    private func handleQwenHook(_ payload: QwenHookPayload, from clientID: UUID) {
+        if !hasSession(id: payload.sessionID) {
+            emit(
+                .sessionStarted(
+                    SessionStarted(
+                        sessionID: payload.sessionID,
+                        title: payload.sessionTitle,
+                        tool: .qwenCode,
+                        origin: .live,
+                        initialPhase: .running,
+                        summary: payload.implicitStartSummary,
+                        timestamp: .now,
+                        jumpTarget: payload.defaultJumpTarget
+                    )
+                )
+            )
+        }
+
+        switch payload.hookEventName {
+        case "SessionStart":
+            // Already handled above
+            break
+        case "UserPromptSubmit":
+            emit(
+                .activityUpdated(
+                    SessionActivityUpdated(
+                        sessionID: payload.sessionID,
+                        summary: payload.promptPreview.map { "Prompt: \($0)" } ?? payload.implicitStartSummary,
+                        phase: .running,
+                        timestamp: .now
+                    )
+                )
+            )
+        case "PreToolUse":
+            let summary = payload.toolName.map { "Running \($0)" } ?? "Running Qwen tool"
+            emit(
+                .activityUpdated(
+                    SessionActivityUpdated(
+                        sessionID: payload.sessionID,
+                        summary: summary,
+                        phase: .running,
+                        timestamp: .now
+                    )
+                )
+            )
+        case "PostToolUse":
+            let summary = payload.toolName.map { "\($0) finished." } ?? "Qwen tool finished."
+            emit(
+                .activityUpdated(
+                    SessionActivityUpdated(
+                        sessionID: payload.sessionID,
+                        summary: summary,
+                        phase: .running,
+                        timestamp: .now
+                    )
+                )
+            )
+        case "Stop":
+            emit(
+                .sessionCompleted(
+                    SessionCompleted(
+                        sessionID: payload.sessionID,
+                        summary: payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Qwen completed the turn.",
+                        timestamp: .now,
+                        isInterrupt: payload.isInterrupt
+                    )
+                )
+            )
+        case "StopFailure":
+            emit(
+                .sessionCompleted(
+                    SessionCompleted(
+                        sessionID: payload.sessionID,
+                        summary: payload.error ?? payload.lastAssistantMessage ?? payload.assistantMessagePreview ?? "Qwen failed to finish the turn.",
+                        timestamp: .now,
+                        isInterrupt: payload.isInterrupt
+                    )
+                )
+            )
+        case "SessionEnd":
+            emit(
+                .sessionCompleted(
+                    SessionCompleted(
+                        sessionID: payload.sessionID,
+                        summary: "Qwen session ended.",
+                        timestamp: .now,
+                        isInterrupt: true,
+                        isSessionEnd: true
+                    )
+                )
+            )
+        default:
+            break
+        }
+
+        send(.response(.acknowledged), to: clientID)
     }
 
     private func handleCursorHook(_ payload: CursorHookPayload, from clientID: UUID) {

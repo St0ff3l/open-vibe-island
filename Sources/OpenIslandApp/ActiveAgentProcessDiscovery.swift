@@ -90,7 +90,8 @@ struct ActiveAgentProcessDiscovery {
                     continue
                 }
 
-                let claimKey = "claude:\(snapshot.sessionID ?? snapshot.terminalTTY ?? snapshot.workingDirectory ?? process.pid)"
+                let toolPrefix = snapshot.tool == .qwenCode ? "qwen" : "claude"
+                let claimKey = "\(toolPrefix):\(snapshot.sessionID ?? snapshot.terminalTTY ?? snapshot.workingDirectory ?? process.pid)"
                 guard claimedKeys.insert(claimKey).inserted else {
                     continue
                 }
@@ -182,13 +183,14 @@ struct ActiveAgentProcessDiscovery {
     }
 
     private func isClaudeSubagentWorktree(_ path: String) -> Bool {
-        path.contains("/.claude/worktrees/agent-")
+        path.contains("/.claude/worktrees/agent-") || path.contains("/.qwen/worktrees/agent-")
     }
 
     private func claudeSnapshot(
         for process: RunningProcess,
         processesByPID: [String: RunningProcess]
     ) -> ProcessSnapshot? {
+        let isQwen = process.command.lowercased().contains("qwen")
         let lsofOutput = lsofOutput(pid: process.pid)
         let workingDirectory = lsofOutput.flatMap(workingDirectory(from:))
 
@@ -199,7 +201,7 @@ struct ActiveAgentProcessDiscovery {
         }
 
         let transcriptPath = lsofOutput.flatMap {
-            bestClaudeTranscriptPath(in: $0, workingDirectory: workingDirectory)
+            bestClaudeTranscriptPath(in: $0, workingDirectory: workingDirectory, isQwen: isQwen)
         }
         let sessionID = transcriptPath.flatMap(firstUUID(in:))
             ?? claudeSessionID(from: process.command)
@@ -209,7 +211,7 @@ struct ActiveAgentProcessDiscovery {
         }
 
         var snapshot = ProcessSnapshot(
-            tool: .claudeCode,
+            tool: isQwen ? .qwenCode : .claudeCode,
             sessionID: sessionID,
             workingDirectory: workingDirectory,
             terminalTTY: process.terminalTTY,
@@ -233,8 +235,9 @@ struct ActiveAgentProcessDiscovery {
         return snapshot
     }
 
-    private func bestClaudeTranscriptPath(in lsofOutput: String, workingDirectory: String?) -> String? {
-        let paths = allMatchingPaths(in: lsofOutput, containing: "/.claude/projects/", suffix: ".jsonl")
+    private func bestClaudeTranscriptPath(in lsofOutput: String, workingDirectory: String?, isQwen: Bool = false) -> String? {
+        let basePath = isQwen ? "/.qwen/projects/" : "/.claude/projects/"
+        let paths = allMatchingPaths(in: lsofOutput, containing: basePath, suffix: ".jsonl")
         guard !paths.isEmpty else {
             return nil
         }
@@ -505,12 +508,16 @@ struct ActiveAgentProcessDiscovery {
         if lowered.contains("/.local/bin/claude") {
             return true
         }
+        
+        if lowered.contains("/.local/bin/qwen") {
+            return true
+        }
 
         guard let firstToken = lowered.split(separator: " ").first else {
             return false
         }
 
-        return firstToken == "claude"
+        return firstToken == "claude" || firstToken == "qwen"
     }
 
     private static func commandOutput(executablePath: String, arguments: [String]) -> String? {
