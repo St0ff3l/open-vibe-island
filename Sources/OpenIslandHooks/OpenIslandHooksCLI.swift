@@ -74,6 +74,7 @@ struct OpenIslandHooksCLI {
                 }
             case .qwen:
                 let payload = try decoder.decode(QwenHookPayload.self, from: input)
+                    .withRuntimeContext(environment: ProcessInfo.processInfo.environment)
                 guard (try? client.send(.processQwenHook(payload), timeout: 45)) != nil else {
                     logStderr("bridge unavailable for qwen hook")
                     return
