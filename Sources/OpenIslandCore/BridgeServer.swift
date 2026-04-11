@@ -1951,8 +1951,14 @@ public final class BridgeServer: @unchecked Sendable {
         switch lowercasedEvent {
         case "pretooluse", "pre_tool_use":
             mergedMetadata.currentTool = payload.toolName
+            // Use message, prompt, or title as the tool input preview if available
+            let toolInput = payload.message ?? payload.prompt ?? payload.title
+            if let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines), !validToolInput.isEmpty {
+                mergedMetadata.currentToolInputPreview = validToolInput
+            }
         case "posttooluse", "post_tool_use", "stop", "stopfailure", "stop_failure", "sessionend", "session_end":
             mergedMetadata.currentTool = nil
+            mergedMetadata.currentToolInputPreview = nil
         default:
             break
         }
