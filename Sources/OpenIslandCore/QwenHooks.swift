@@ -16,6 +16,8 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
     public var error: String?
     public var isInterrupt: Bool?
     public var remote: Bool?
+    public var toolInputPreview: String?
+    public var toolInput: String?
 
     public var terminalApp: String?
     public var workspaceName: String {
@@ -41,6 +43,8 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         case error
         case isInterrupt = "is_interrupt"
         case remote
+        case toolInputPreview = "tool_input_preview"
+        case toolInput = "tool_input"
     }
 
     public init(
@@ -59,6 +63,8 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         error: String? = nil,
         isInterrupt: Bool? = nil,
         remote: Bool? = nil,
+        toolInputPreview: String? = nil,
+        toolInput: String? = nil,
         terminalApp: String? = nil,
         terminalTitle: String? = nil,
         terminalSessionID: String? = nil,
@@ -79,6 +85,8 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         self.error = error
         self.isInterrupt = isInterrupt
         self.remote = remote
+        self.toolInputPreview = toolInputPreview
+        self.toolInput = toolInput
         self.terminalApp = terminalApp
         self.terminalTitle = terminalTitle
         self.terminalSessionID = terminalSessionID

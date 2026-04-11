@@ -1204,7 +1204,20 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "pretooluse", "pre_tool_use":
-            let summary = payload.toolName.map { "Running \($0)" } ?? "Running Qwen tool"
+            let summary: String
+            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
+            let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if let toolName = payload.toolName {
+                if let input = validToolInput, !input.isEmpty {
+                    summary = "Running \(toolName): \(input)"
+                } else {
+                    summary = "Running \(toolName)"
+                }
+            } else {
+                summary = "Running Qwen tool"
+            }
+
             emit(
                 .activityUpdated(
                     SessionActivityUpdated(
@@ -1951,9 +1964,11 @@ public final class BridgeServer: @unchecked Sendable {
         switch lowercasedEvent {
         case "pretooluse", "pre_tool_use":
             mergedMetadata.currentTool = payload.toolName
-            // Use message, prompt, or title as the tool input preview if available
-            let toolInput = payload.message ?? payload.prompt ?? payload.title
+            // Use tool_input, tool_input_preview, message, prompt, or title as the tool input preview if available
+            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
             if let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines), !validToolInput.isEmpty {
+                // If it looks like a JSON string but we want it compact, maybe we just keep it as is.
+                // The UI will trim it to 200 chars anyway.
                 mergedMetadata.currentToolInputPreview = validToolInput
             }
         case "posttooluse", "post_tool_use", "stop", "stopfailure", "stop_failure", "sessionend", "session_end":

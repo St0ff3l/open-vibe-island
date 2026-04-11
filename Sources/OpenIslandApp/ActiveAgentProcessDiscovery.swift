@@ -190,8 +190,8 @@ struct ActiveAgentProcessDiscovery {
         for process: RunningProcess,
         processesByPID: [String: RunningProcess]
     ) -> ProcessSnapshot? {
-        let isQwen = process.command.lowercased().contains("qwen")
         let lsofOutput = lsofOutput(pid: process.pid)
+        let isQwen = process.command.lowercased().contains("qwen") || (lsofOutput?.contains("/.qwen/") == true)
         let workingDirectory = lsofOutput.flatMap(workingDirectory(from:))
 
         // Subagent processes run in .claude/worktrees/agent-*/ directories.

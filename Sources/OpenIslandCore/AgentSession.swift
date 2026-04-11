@@ -457,7 +457,7 @@ public extension AgentSession {
     var isVisibleInIsland: Bool {
         if isDemoSession { return true }
         if phase.requiresAttention { return true }
-        if isHookManaged { return !isSessionEnded }
+        if isHookManaged { return !isSessionEnded && isProcessAlive }
         if isProcessAlive { return true }
         return false
     }
