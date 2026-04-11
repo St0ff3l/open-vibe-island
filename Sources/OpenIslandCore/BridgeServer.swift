@@ -1882,7 +1882,8 @@ public final class BridgeServer: @unchecked Sendable {
             return
         }
 
-        let validPrompt = payload.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? payload.prompt : nil
+        let rawPrompt = payload.prompt ?? payload.message
+        let validPrompt = rawPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? rawPrompt : nil
         let validMsg = payload.lastAssistantMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? payload.lastAssistantMessage : nil
 
         var mergedMetadata = existingSession.claudeMetadata ?? ClaudeSessionMetadata(
