@@ -464,7 +464,7 @@ public extension AgentSession {
                 return Date.now.timeIntervalSince(updatedAt) <= 6.0
             }
             
-            return true
+            return attachmentState.isLive
         }
         if isProcessAlive { return true }
         return false
