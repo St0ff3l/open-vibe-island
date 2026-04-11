@@ -264,11 +264,12 @@ struct ActiveAgentProcessDiscovery {
             }
 
             let value = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard value.contains(fragment), value.hasSuffix(suffix) else {
+            let unescaped = unescapeLSOF(value)
+            guard unescaped.contains(fragment), unescaped.hasSuffix(suffix) else {
                 continue
             }
 
-            results.append(value)
+            results.append(unescaped)
         }
 
         return results
@@ -398,12 +399,54 @@ struct ActiveAgentProcessDiscovery {
             }
 
             let value = String(nextLine.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.hasPrefix("/") {
-                return value
+            let unescaped = unescapeLSOF(value)
+            if unescaped.hasPrefix("/") {
+                return unescaped
             }
         }
 
         return nil
+    }
+
+    private func unescapeLSOF(_ string: String) -> String {
+        var result = ""
+        var i = string.startIndex
+        var bytes: [UInt8] = []
+
+        func flushBytes() {
+            if !bytes.isEmpty {
+                if let s = String(bytes: bytes, encoding: .utf8) {
+                    result += s
+                } else {
+                    for b in bytes {
+                        result += String(format: "\\x%02x", b)
+                    }
+                }
+                bytes.removeAll()
+            }
+        }
+
+        while i < string.endIndex {
+            if string[i] == "\\" {
+                let nextI = string.index(after: i)
+                if nextI < string.endIndex, string[nextI] == "x" {
+                    let hexStart = string.index(after: nextI)
+                    if let hexEnd = string.index(hexStart, offsetBy: 2, limitedBy: string.endIndex) {
+                        let hexStr = string[hexStart..<hexEnd]
+                        if let byte = UInt8(hexStr, radix: 16) {
+                            bytes.append(byte)
+                            i = hexEnd
+                            continue
+                        }
+                    }
+                }
+            }
+            flushBytes()
+            result.append(string[i])
+            i = string.index(after: i)
+        }
+        flushBytes()
+        return result
     }
 
     private func matchingPath(in lsofOutput: String, containing fragment: String, suffix: String) -> String? {
@@ -413,11 +456,12 @@ struct ActiveAgentProcessDiscovery {
             }
 
             let value = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard value.contains(fragment), value.hasSuffix(suffix) else {
+            let unescaped = unescapeLSOF(value)
+            guard unescaped.contains(fragment), unescaped.hasSuffix(suffix) else {
                 continue
             }
 
-            return value
+            return unescaped
         }
 
         return nil
