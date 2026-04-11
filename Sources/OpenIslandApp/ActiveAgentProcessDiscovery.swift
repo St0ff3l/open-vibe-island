@@ -236,8 +236,9 @@ struct ActiveAgentProcessDiscovery {
     }
 
     private func bestClaudeTranscriptPath(in lsofOutput: String, workingDirectory: String?, isQwen: Bool = false) -> String? {
-        let basePath = isQwen ? "/.qwen/projects/" : "/.claude/projects/"
-        let paths = allMatchingPaths(in: lsofOutput, containing: basePath, suffix: ".jsonl")
+        let qwenPaths = allMatchingPaths(in: lsofOutput, containing: "/.qwen/projects/", suffix: ".jsonl")
+        let claudePaths = allMatchingPaths(in: lsofOutput, containing: "/.claude/projects/", suffix: ".jsonl")
+        let paths = qwenPaths + claudePaths
         guard !paths.isEmpty else {
             return nil
         }

@@ -459,9 +459,20 @@ public extension AgentSession {
         if phase.requiresAttention { return true }
         if isHookManaged {
             if phase == .completed {
-                return true // the 5-second limit is enforced by islandPresence
+                // Keep it in state for 6 seconds (slightly longer than the 5s UI presence limit)
+                // so that it can be cleanly animated out before being purged from memory.
+                return Date.now.timeIntervalSince(updatedAt) <= 6.0
             }
-            return !isSessionEnded && isProcessAlive
+            
+            // Hook-managed sessions are primarily controlled by the bridge.
+            // We give them a large 60-second grace period to ignore flaky process 
+            // polling dropouts. If the process is dead AND no hook events arrived 
+            // for 60 seconds, we treat it as a zombie and cull it.
+            if !isProcessAlive && Date.now.timeIntervalSince(updatedAt) > 60.0 {
+                return false
+            }
+            
+            return true
         }
         if isProcessAlive { return true }
         return false
