@@ -1,61 +1,53 @@
-# Qwen 独立 Hook 与进程守护修复说明
+# Qwen Code Integration & State Machine Guide
 
-本文档记录了将 `qwen-cli` 的 Hook 逻辑从 `claude` 逻辑中彻底解耦，并修复 UI 闪退、提示“没有打开的终端会话”的核心操作与思路。
+This document outlines the architectural decisions, challenges solved, and implementation details for deeply integrating Qwen Code (`qwen-cli`) into the Open Island ecosystem.
 
-## 故障现象与原因分析
+## 1. The Dual-Track State Machine Challenge
 
-**现象**：在终端执行 Qwen 命令时，Open Island 的 UI 会短暂出现（约 2 秒），随后变成“没有打开的终端会话”（No open terminal sessions），并在后续执行工具时不断闪烁。
+Open Island tracks CLI agents using two distinct and parallel systems:
+1. **Process Discovery (Polling)**: A background task (`sessionAttachmentMonitorTask`) uses `lsof` and `ps` to scan the OS every ~2 seconds to find running agent processes and their working directories.
+2. **Hook Events (Push)**: The CLI tool actively sends Unix socket events (`sessionstart`, `userpromptsubmit`, `sessionend`, etc.) directly to the Open Island `BridgeServer`.
 
-**根本原因**：
-Open Island 的架构分为两部分：
-1. **Hook 接收器** (`OpenIslandHooksCLI`)：负责接收 CLI 传来的 JSON，并在 UI 创建一个 Session。
-2. **本地进程守护** (`ProcessMonitoringCoordinator` / `ActiveAgentProcessDiscovery`)：负责每秒扫描 macOS 的进程表（`ps` / `lsof`），确认这个 Session 对应的底层进程（Node/Qwen）和终端窗口（Ghostty/iTerm）是否还活着。
+### The Flaky Polling Problem (The "Flashing Card" Bug)
+CLI tools like `qwen-cli` are frequently invoked via Node.js package managers (`npx`, `bun`, `npm`, `yarn`, `pnpm`). These wrappers create deeply nested process trees. Process polling can easily miss the actual agent process for a few seconds during high CPU load or complex package manager resolutions.
 
-由于我们把 Qwen 的 Payload 从 Claude 独立了出来，导致**进程守护系统完全不认识 Qwen**，从而引发了一系列连锁反应：UI 刚根据 Hook 创建了 Qwen 会话，进程守护系统扫描一圈发现“找不到匹配的 Qwen 进程和终端”，于是立刻判定会话已死亡/终端已关闭，导致 UI 消失。
+*   **Previous Behavior**: If the poller missed a process twice (about 4 seconds), the State Machine forcefully marked the session as `isSessionEnded = true` and `phase = .completed`. This caused the UI card to unexpectedly disappear ("flash" out of existence) right in the middle of a task, only to reappear when the actual `sessionend` hook finally arrived.
+*   **The Solution (Hook Trust)**: We shifted the source of truth for visibility. If a session is `isHookManaged == true` (meaning it originated from a Socket Hook), the State Machine **absolutely trusts the Hook over the Process Poller**. We no longer forcefully complete a hook-managed session due to a polling miss. 
+    *   *Implementation*: In `SessionState.markProcessLiveness()`, we only update `isProcessAlive` but leave the phase intact. A 60-second inactivity timeout acts as the ultimate fallback if the terminal crashes without sending a `sessionend` hook.
 
-## 详细修复步骤
+## 2. Process Identification Details
 
-为了彻底解决这个问题，我们在整个链路的 5 个关键节点进行了修改：
+To successfully map a Qwen terminal window to its UI card, `ActiveAgentProcessDiscovery.swift` handles several edge cases:
 
-### 1. Hook 负载解析与 CLI 阻塞修复
-* **文件**：`Sources/OpenIslandCore/QwenHooks.swift`, `Sources/OpenIslandHooks/OpenIslandHooksCLI.swift`
-* **操作**：
-  * 为 `QwenHookPayload` 添加了 `CodingKeys`，将 CLI 传来的 `snake_case`（如 `hook_event_name`）正确映射为 Swift 的 `camelCase`，修复了解析失败的问题。
-  * 在 `OpenIslandHooksCLI.swift` 中，Qwen 分支处理完毕后，强制向标准输出写入 `{"continue":true,"suppressOutput":true}\n`。这是因为 Qwen CLI 会阻塞等待这个 JSON 返回，如果不写，终端会卡死。
+*   **Package Manager Penetration**: The `isClaudeProcess` matcher now accepts commands starting with `node`, `npx`, `bun`, `npm`, `pnpm`, or `yarn`, as long as `qwen` or `qwen-cli` is present later in the argument list.
+*   **Transcript Segregation**: Claude Code and Qwen Code use different local storage paths. The discovery engine's `bestClaudeTranscriptPath` now merges searches across both `/.claude/projects/` and `/.qwen/projects/` to accurately find `.jsonl` files without cross-contamination.
 
-### 2. 终端上下文注入 (Terminal Context Injection)
-* **文件**：`Sources/OpenIslandCore/QwenHooks.swift`
-* **操作**：
-  * 将 `ClaudeHooks.swift` 中的 `withRuntimeContext` 逻辑完整移植到了 `QwenHooks.swift`。
-  * **为什么关键**：Hook JSON 默认只包含 `cwd` 和 `session_id`。如果不注入 `terminalTTY`（如 `/dev/ttys001`）和 `terminalApp`（如 `Ghostty`），Open Island 就不知道把这个 UI 挂载到哪个终端窗口上。
+## 3. UI Lifecycle & The "Zombie Session" Prevention
 
-### 3. Prompt 更新与持久化修复
-* **文件**：`Sources/OpenIslandCore/BridgeServer.swift`
-* **操作**：
-  * 修改了 `synchronizeQwenMetadata` 函数，限制只有明确收到 `user_prompt_submit` Hook 事件时才允许覆盖 `lastUserPrompt`。
-  * **为什么关键**：Qwen CLI 在工具执行等中间阶段发送的 Hook 可能携带 `prompt` 等无关字段，之前粗暴地读取会导致 UI 上的提示词被清空或卡在第一句。修复后，Prompt 能够在多轮对话中正常更新。
+Achieving the exact 5-second graceful exit animation after a task finishes required solving a deeply hidden race condition known as the "Zombie Synthetic Session" bug.
 
-### 4. Node 进程识别与生命周期修复 (Process Discovery & Lifecycle)
-* **文件**：`Sources/OpenIslandApp/ActiveAgentProcessDiscovery.swift`, `Sources/OpenIslandCore/BridgeServer.swift`
-* **操作**：
-  * 修改了 `isClaudeProcess` 方法。
-  * **为什么关键**：在 macOS 的 `ps` 输出中，Qwen 经常是以 `node /Users/.../bin/qwen` 的形式运行的。原本的代码只检查第一个单词是不是 `claude` 或 `qwen`，导致所有 `node` 开头的进程被直接忽略。
-  * 在 `BridgeServer.swift` 的 `handleQwenHook` 中新增了处理 Qwen 的 `notification` 类型 Hook 的逻辑。
-  * **为什么关键**：当 Qwen 结束回合回到 `Qwen Code is waiting for your input` 时，会发送一个消息性质的通知。如果不去响应它并将其 `phase` 转入 `.completed` 且清空干扰的状态，UI 的绿色完成面板将因为误判应用仍在后台强制挂载而永远无法自动折叠。
+### The Zombie Bug Anatomy:
+1. `qwen-cli` finishes its task and sends the `sessionend` hook.
+2. The UI correctly displays the completed green card for 5.0 seconds (managed by `islandPresence`).
+3. After 5 seconds, the card smoothly animates out of the Notch and the list. `isVisibleInIsland` evaluates to `false`.
+4. `SessionState.removeInvisibleSessions()` executes garbage collection and purges the session from memory to save RAM.
+5. **The Race Condition**: The user's terminal window is still open (`isProcessAlive == true`).
+6. The background Process Poller runs its 2-second scan, sees the Qwen terminal process, but finds *no matching session in memory* (because we just deleted it).
+7. The Poller mistakenly assumes this is an untracked agent and instantly generates a new "Synthetic Session"—a fake `Running` card (blue dot) with no chat history that cannot be dismissed until the user completely quits the terminal app.
 
-### 5. 进程与会话保活匹配 (Process Monitoring Coordinator)
-* **文件**：`Sources/OpenIslandApp/ProcessMonitoringCoordinator.swift`
-* **操作**：
-  * 全局将特判 `session.tool == .claudeCode` 的地方扩充为 `(session.tool == .claudeCode || session.tool == .qwenCode)`。
-  * 引入了**后缀匹配** (`hasSuffix`)：Qwen CLI 传来的 `session_id` 是 `project-xxxx-xxxx...`，但本地扫描 `transcript.jsonl` 提取出的 ID 只有 `xxxx-xxxx...`。将严格相等（`==`）改为允许后缀匹配，解决了 ID 匹配不上的问题。
-  * 将 Qwen 加入到了多重匹配（Multi-pass matching）逻辑中：即使 Session ID 没对上，只要 Qwen 进程的 `TTY` 和当前路径（`CWD`）与 Hook 传来的信息一致，就强行判定进程存活，确保 UI 永不消失。
+### The Tombstone Solution:
+We changed the garbage collection filter in `SessionState.removeInvisibleSessions()`. 
 
-### 6. 终端窗口挂载状态 (Terminal Session Attachment Probe)
-* **文件**：`Sources/OpenIslandApp/TerminalSessionAttachmentProbe.swift`
-* **操作**：
-  * 同样将大量硬编码的 `.claudeCode` 检查扩充以包含 `.qwenCode`。
-  * **为什么关键**：这个文件专门决定 UI 是否要显示“没有打开的终端会话”。之前因为忽略了 `.qwenCode`，系统默认认定 Qwen 没有依附任何有效终端。修复后，UI 能够准确识别 Qwen 所在的终端窗口并正常吸附。
+*   **Old Filter**: `session.isVisibleInIsland`
+*   **New Filter**: `session.isVisibleInIsland || session.isProcessAlive`
 
-## 总结
+**Result**: Once a task finishes, it disappears from the user's view (Notch/List), but its data structure acts as a "tombstone" in the memory pool for as long as the terminal remains open. When the Process Poller scans the terminal, it matches the tombstone, realizes the session is already completed, and safely ignores it. Synthetic zombies are completely eradicated.
 
-现在的 Qwen Hook 链路已经成为一条**一等公民 (First-class citizen)** 链路。它不仅在 Hook 解析层独立（避免被 Claude 复杂的 Tool/Thinking 状态机干扰），在底层的进程守护、终端发现、UI 挂载层面也享受了与 Claude 完全同等级的存活保障（Liveness Guarantee）。
+## 4. Metadata Synchronization & Context Preservation
+
+Qwen's metadata is synchronized via `BridgeServer.swift` -> `synchronizeQwenMetadata()`. 
+
+To ensure the UI collapsed card always displays the initial user request (e.g., `You: Create a python script`) instead of remaining blank after completion:
+*   The bridge intercepts the `sessionstart` hook event in addition to `userpromptsubmit`.
+*   It populates `initialUserPrompt` and `lastUserPrompt` with the provided prompt or title data immediately upon session creation.
+*   This data flows seamlessly through `AgentSession+Presentation.swift` directly into the Spotlight UI components, ensuring the context is preserved even after the agent finishes execution.
