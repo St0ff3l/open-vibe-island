@@ -1183,6 +1183,26 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
+        case "notification":
+            let currentPhase = localState.session(id: payload.sessionID)?.phase ?? .completed
+            let notificationPhase: SessionPhase
+            let message = payload.message ?? payload.title ?? ""
+            if message.lowercased().contains("waiting for your input") || message.lowercased().contains("idle") {
+                notificationPhase = .completed
+            } else {
+                notificationPhase = currentPhase
+            }
+
+            emit(
+                .activityUpdated(
+                    SessionActivityUpdated(
+                        sessionID: payload.sessionID,
+                        summary: payload.promptPreview ?? payload.implicitStartSummary,
+                        phase: notificationPhase,
+                        timestamp: .now
+                    )
+                )
+            )
         case "pretooluse", "pre_tool_use":
             let summary = payload.toolName.map { "Running \($0)" } ?? "Running Qwen tool"
             emit(
@@ -1905,11 +1925,15 @@ public final class BridgeServer: @unchecked Sendable {
             activeTasks: []
         )
 
-        if let prompt = validPrompt {
-            if mergedMetadata.initialUserPrompt == nil {
-                mergedMetadata.initialUserPrompt = prompt
+        let lowercasedEvent = payload.hookEventName.lowercased()
+        
+        if lowercasedEvent == "user_prompt_submit" || lowercasedEvent == "userpromptsubmit" {
+            if let prompt = validPrompt {
+                if mergedMetadata.initialUserPrompt == nil {
+                    mergedMetadata.initialUserPrompt = prompt
+                }
+                mergedMetadata.lastUserPrompt = prompt
             }
-            mergedMetadata.lastUserPrompt = prompt
         }
         
         if let msg = validMsg {
@@ -1924,7 +1948,6 @@ public final class BridgeServer: @unchecked Sendable {
             mergedMetadata.agentID = agentID
         }
 
-        let lowercasedEvent = payload.hookEventName.lowercased()
         switch lowercasedEvent {
         case "pretooluse", "pre_tool_use":
             mergedMetadata.currentTool = payload.toolName
