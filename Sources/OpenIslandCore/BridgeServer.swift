@@ -1882,11 +1882,14 @@ public final class BridgeServer: @unchecked Sendable {
             return
         }
 
+        let validPrompt = payload.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? payload.prompt : nil
+        let validMsg = payload.lastAssistantMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? payload.lastAssistantMessage : nil
+
         var mergedMetadata = existingSession.claudeMetadata ?? ClaudeSessionMetadata(
             transcriptPath: payload.transcriptPath,
-            initialUserPrompt: payload.prompt,
-            lastUserPrompt: payload.prompt,
-            lastAssistantMessage: payload.lastAssistantMessage,
+            initialUserPrompt: validPrompt,
+            lastUserPrompt: validPrompt,
+            lastAssistantMessage: validMsg,
             currentTool: payload.toolName,
             currentToolInputPreview: nil,
             model: payload.model,
@@ -1899,14 +1902,14 @@ public final class BridgeServer: @unchecked Sendable {
             activeTasks: []
         )
 
-        if let prompt = payload.prompt {
+        if let prompt = validPrompt {
             if mergedMetadata.initialUserPrompt == nil {
                 mergedMetadata.initialUserPrompt = prompt
             }
             mergedMetadata.lastUserPrompt = prompt
         }
         
-        if let msg = payload.lastAssistantMessage {
+        if let msg = validMsg {
             mergedMetadata.lastAssistantMessage = msg
         }
         
