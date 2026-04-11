@@ -560,11 +560,11 @@ struct ActiveAgentProcessDiscovery {
             return false
         }
 
-        if firstToken == "claude" || firstToken == "qwen" || firstToken == "qwen-cli" {
+        if firstToken == "claude" || firstToken == "qwen" {
             return true
         }
 
-        if firstToken == "node" || firstToken.hasSuffix("/node") || firstToken == "npx" || firstToken == "bun" || firstToken == "npm" || firstToken == "pnpm" || firstToken == "yarn" {
+        if firstToken == "node" || firstToken.hasSuffix("/node") {
             if lowered.contains("claude") || lowered.contains("qwen") {
                 return true
             }
