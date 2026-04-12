@@ -28,6 +28,10 @@ final class OverlayPanelController {
     private static let completionCardChromeHeight: CGFloat = 187
     private static let completionCardMinHeight: CGFloat = 210
     private static let completionCardMaxHeight: CGFloat = 400
+    private static let firstPassNotificationSafetyPadding: CGFloat = 64
+    private static let firstPassApprovalBodyMinHeight: CGFloat = 210
+    private static let firstPassQuestionBodyMinHeight: CGFloat = 150
+    private static let firstPassCompletionBodyMinHeight: CGFloat = 230
     private static let hiddenIdleEdgeHoverHitHeight: CGFloat = 8
 
     private var panel: NotchPanel?
@@ -552,17 +556,19 @@ final class OverlayPanelController {
             if model.measuredNotificationContentHeight > 0 {
                 return model.measuredNotificationContentHeight + 28
             }
-            // First render: estimate from the actionable session's content so the
-            // initial window is close to the final size. This avoids a large blank
-            // panel flash (the previous 500pt fallback) and reduces the chance of
-            // a measurement→reposition cycle.
+            // First render: bias the estimate a little high so notification cards
+            // show completely on frame one, then let SwiftUI measurement pull the
+            // panel back down on the next layout pass.
             if let actionableID,
                let session = model.state.session(id: actionableID) {
                 let rowHeight = session.estimatedIslandRowHeight(at: now)
-                let bodyHeight = actionableBodyHeight(for: session, model: model)
+                let bodyHeight = max(
+                    actionableBodyHeight(for: session, model: model) + Self.firstPassNotificationSafetyPadding,
+                    minimumFirstPassNotificationBodyHeight(for: session)
+                )
                 return rowHeight + bodyHeight + Self.openedContentVerticalInsets
             }
-            return 300
+            return 360
         }
 
         let rowHeights = visibleSessions.map { session -> CGFloat in
@@ -630,6 +636,19 @@ final class OverlayPanelController {
             return titleHeight + 88 // TextField + Button
         } else {
             return titleHeight + 36 // Buttons
+        }
+    }
+
+    private func minimumFirstPassNotificationBodyHeight(for session: AgentSession) -> CGFloat {
+        switch session.phase {
+        case .waitingForApproval:
+            return Self.firstPassApprovalBodyMinHeight
+        case .waitingForAnswer:
+            return Self.firstPassQuestionBodyMinHeight
+        case .completed:
+            return Self.firstPassCompletionBodyMinHeight
+        case .running:
+            return 0
         }
     }
 

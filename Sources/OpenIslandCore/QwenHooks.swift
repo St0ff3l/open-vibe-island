@@ -270,11 +270,50 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
     }
 
     public var questionPrompt: QuestionPrompt? {
+        if let prompt = askUserQuestionPrompt {
+            return prompt
+        }
+
         guard let title = clipped(questionText) else {
             return nil
         }
 
         return QuestionPrompt(title: title, options: [])
+    }
+
+    private var askUserQuestionPrompt: QuestionPrompt? {
+        guard toolName == "AskUserQuestion",
+              let root = parsedToolInputObject else {
+            return nil
+        }
+
+        let questions = parsedQuestionItems(from: root)
+        if !questions.isEmpty {
+            let title: String
+            if questions.count == 1, let firstQuestion = clipped(questions.first?.question) {
+                title = firstQuestion
+            } else {
+                title = "Qwen has \(questions.count) questions for you."
+            }
+
+            return QuestionPrompt(title: title, questions: questions)
+        }
+
+        let fallbackTitle = clipped(
+            root["question"]?.stringValue
+                ?? root["prompt"]?.stringValue
+                ?? questionText
+        )
+
+        let options = parsedQuestionOptions(from: root["options"])
+        guard let fallbackTitle else {
+            return nil
+        }
+
+        return QuestionPrompt(
+            title: fallbackTitle,
+            options: options.map(\.label)
+        )
     }
 
     private func clipped(_ string: String?) -> String? {
@@ -315,6 +354,61 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         }
 
         return nil
+    }
+
+    private func parsedQuestionItems(from root: [String: ClaudeHookJSONValue]) -> [QuestionPromptItem] {
+        guard case let .array(rawQuestions)? = root["questions"] else {
+            return []
+        }
+
+        return rawQuestions.compactMap { rawQuestion in
+            guard case let .object(questionObject) = rawQuestion else {
+                return nil
+            }
+
+            let questionText = clipped(
+                questionObject["question"]?.stringValue
+                    ?? questionObject["prompt"]?.stringValue
+            )
+            let options = parsedQuestionOptions(from: questionObject["options"])
+
+            guard let questionText, !options.isEmpty else {
+                return nil
+            }
+
+            let header = clipped(questionObject["header"]?.stringValue) ?? "Question"
+            return QuestionPromptItem(
+                question: questionText,
+                header: header,
+                options: options,
+                multiSelect: questionObject["multiSelect"]?.boolValue ?? false
+            )
+        }
+    }
+
+    private func parsedQuestionOptions(from rawValue: ClaudeHookJSONValue?) -> [QuestionOption] {
+        guard case let .array(rawOptions)? = rawValue else {
+            return []
+        }
+
+        return rawOptions.compactMap { rawOption in
+            switch rawOption {
+            case let .string(label):
+                guard let label = clipped(label) else {
+                    return nil
+                }
+                return QuestionOption(label: label)
+            case let .object(optionObject):
+                guard let label = clipped(optionObject["label"]?.stringValue) else {
+                    return nil
+                }
+
+                let description = clipped(optionObject["description"]?.stringValue) ?? ""
+                return QuestionOption(label: label, description: description)
+            default:
+                return nil
+            }
+        }
     }
 
     private func stringValue(for value: ClaudeHookJSONValue?) -> String? {
@@ -661,6 +755,14 @@ public enum QwenHookOutputEncoder {
 private extension ClaudeHookJSONValue {
     var stringValue: String? {
         if case let .string(value) = self {
+            value
+        } else {
+            nil
+        }
+    }
+
+    var boolValue: Bool? {
+        if case let .boolean(value) = self {
             value
         } else {
             nil

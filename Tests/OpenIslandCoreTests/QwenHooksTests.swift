@@ -64,6 +64,39 @@ struct QwenHooksTests {
     }
 
     @Test
+    func qwenAskUserQuestionExtractsStructuredPromptFromToolInput() throws {
+        let payload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "permission_request",
+            sessionID: "qwen-ask-user-question",
+            toolName: "AskUserQuestion",
+            toolInput: .string(
+                """
+                {
+                  "questions": [
+                    {
+                      "question": "Choose environment",
+                      "header": "Env",
+                      "options": [
+                        { "label": "Production", "description": "Use production" },
+                        { "label": "Staging", "description": "Use staging" }
+                      ]
+                    }
+                  ]
+                }
+                """
+            )
+        )
+
+        let prompt = try #require(payload.questionPrompt)
+        #expect(prompt.title == "Choose environment")
+        #expect(prompt.questions.count == 1)
+        #expect(prompt.questions.first?.header == "Env")
+        #expect(prompt.questions.first?.options.map(\.label) == ["Production", "Staging"])
+        #expect(prompt.options == ["Production", "Staging"])
+    }
+
+    @Test
     func qwenPermissionRequestReturnsAllowDirectiveAfterApproval() async throws {
         let socketURL = BridgeSocketLocation.uniqueTestURL()
         let server = BridgeServer(socketURL: socketURL)
@@ -107,6 +140,66 @@ struct QwenHooksTests {
 
         let response = try await responseTask
         #expect(response == .qwenHookDirective(.allow))
+    }
+
+    @Test
+    func qwenPermissionRequestForAskUserQuestionEmitsQuestionEvent() async throws {
+        let socketURL = BridgeSocketLocation.uniqueTestURL()
+        let server = BridgeServer(socketURL: socketURL)
+        try server.start()
+        defer { server.stop() }
+
+        let observer = LocalBridgeClient(socketURL: socketURL)
+        let stream = try observer.connect()
+        defer { observer.disconnect() }
+        try await observer.send(.registerClient(role: .observer))
+
+        let payload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "permission_request",
+            sessionID: "qwen-question-via-permission",
+            toolName: "AskUserQuestion",
+            toolInput: .object([
+                "questions": .array([
+                    .object([
+                        "question": .string("Which environment?"),
+                        "header": .string("Env"),
+                        "options": .array([
+                            option(label: "Production", description: "Use production"),
+                            option(label: "Staging", description: "Use staging"),
+                        ]),
+                    ]),
+                ]),
+            ])
+        )
+
+        async let responseTask = sendOnGCDThread(.processQwenHook(payload), socketURL: socketURL)
+
+        var iterator = stream.makeAsyncIterator()
+        let questionEvent = try await nextMatchingEvent(from: &iterator, maxEvents: 8) { event in
+            if case .questionAsked = event {
+                return true
+            }
+            return false
+        }
+
+        if case let .questionAsked(question) = questionEvent {
+            #expect(question.prompt.title == "Which environment?")
+            #expect(question.prompt.options == ["Production", "Staging"])
+            #expect(question.prompt.questions.first?.header == "Env")
+        } else {
+            Issue.record("Expected AskUserQuestion to emit a Qwen question event")
+        }
+
+        try await observer.send(
+            .answerQuestion(
+                sessionID: "qwen-question-via-permission",
+                response: QuestionPromptResponse(answer: "Staging")
+            )
+        )
+
+        let response = try await responseTask
+        #expect(response == .qwenHookDirective(.answer(text: "Staging")))
     }
 
     @Test
@@ -320,4 +413,11 @@ private func sendOnGCDThread(
             }
         }
     }
+}
+
+private func option(label: String, description: String) -> ClaudeHookJSONValue {
+    .object([
+        "label": .string(label),
+        "description": .string(description),
+    ])
 }

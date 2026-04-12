@@ -1272,27 +1272,44 @@ public final class BridgeServer: @unchecked Sendable {
             )
         case "permissionrequest":
             clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
-            emit(
-                .permissionRequested(
-                    PermissionRequested(
-                        sessionID: payload.sessionID,
-                        request: PermissionRequest(
-                            title: payload.permissionRequestTitle,
-                            summary: payload.permissionRequestSummary,
-                            affectedPath: payload.permissionAffectedPath,
-                            primaryActionTitle: "Allow",
-                            secondaryActionTitle: "Deny",
-                            toolName: payload.toolName
-                        ),
-                        timestamp: .now
+            if let questionPrompt = payload.questionPrompt {
+                emit(
+                    .questionAsked(
+                        QuestionAsked(
+                            sessionID: payload.sessionID,
+                            prompt: questionPrompt,
+                            timestamp: .now
+                        )
                     )
                 )
-            )
 
-            pendingQwenInteractions[payload.sessionID] = PendingQwenInteraction(
-                clientID: clientID,
-                kind: .permission(payload)
-            )
+                pendingQwenInteractions[payload.sessionID] = PendingQwenInteraction(
+                    clientID: clientID,
+                    kind: .question(payload)
+                )
+            } else {
+                emit(
+                    .permissionRequested(
+                        PermissionRequested(
+                            sessionID: payload.sessionID,
+                            request: PermissionRequest(
+                                title: payload.permissionRequestTitle,
+                                summary: payload.permissionRequestSummary,
+                                affectedPath: payload.permissionAffectedPath,
+                                primaryActionTitle: "Allow",
+                                secondaryActionTitle: "Deny",
+                                toolName: payload.toolName
+                            ),
+                            timestamp: .now
+                        )
+                    )
+                )
+
+                pendingQwenInteractions[payload.sessionID] = PendingQwenInteraction(
+                    clientID: clientID,
+                    kind: .permission(payload)
+                )
+            }
             return
         case "questionasked":
             clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
