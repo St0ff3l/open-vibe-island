@@ -1,5 +1,52 @@
 import Foundation
 
+public enum QwenHookDirective: Equatable, Codable, Sendable {
+    case allow
+    case deny(reason: String?)
+    case answer(text: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case reason
+        case text
+    }
+
+    private enum DirectiveType: String, Codable {
+        case allow
+        case deny
+        case answer
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(DirectiveType.self, forKey: .type)
+
+        switch type {
+        case .allow:
+            self = .allow
+        case .deny:
+            self = .deny(reason: try container.decodeIfPresent(String.self, forKey: .reason))
+        case .answer:
+            self = .answer(text: try container.decode(String.self, forKey: .text))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .allow:
+            try container.encode(DirectiveType.allow, forKey: .type)
+        case let .deny(reason):
+            try container.encode(DirectiveType.deny, forKey: .type)
+            try container.encodeIfPresent(reason, forKey: .reason)
+        case let .answer(text):
+            try container.encode(DirectiveType.answer, forKey: .type)
+            try container.encode(text, forKey: .text)
+        }
+    }
+}
+
 public struct QwenHookPayload: Equatable, Codable, Sendable {
     public var cwd: String
     public var hookEventName: String
@@ -17,7 +64,10 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
     public var isInterrupt: Bool?
     public var remote: Bool?
     public var toolInputPreview: String?
-    public var toolInput: String?
+    public var toolInput: ClaudeHookJSONValue?
+    public var permissionTitle: String?
+    public var permissionDescription: String?
+    public var questionText: String?
 
     public var terminalApp: String?
     public var workspaceName: String {
@@ -45,6 +95,9 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         case remote
         case toolInputPreview = "tool_input_preview"
         case toolInput = "tool_input"
+        case permissionTitle = "permission_title"
+        case permissionDescription = "permission_description"
+        case questionText = "question_text"
         case terminalApp = "terminal_app"
         case terminalTitle = "terminal_title"
         case terminalSessionID = "terminal_session_id"
@@ -68,7 +121,10 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         isInterrupt: Bool? = nil,
         remote: Bool? = nil,
         toolInputPreview: String? = nil,
-        toolInput: String? = nil,
+        toolInput: ClaudeHookJSONValue? = nil,
+        permissionTitle: String? = nil,
+        permissionDescription: String? = nil,
+        questionText: String? = nil,
         terminalApp: String? = nil,
         terminalTitle: String? = nil,
         terminalSessionID: String? = nil,
@@ -91,6 +147,9 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         self.remote = remote
         self.toolInputPreview = toolInputPreview
         self.toolInput = toolInput
+        self.permissionTitle = permissionTitle
+        self.permissionDescription = permissionDescription
+        self.questionText = questionText
         self.terminalApp = terminalApp
         self.terminalTitle = terminalTitle
         self.terminalSessionID = terminalSessionID
@@ -124,11 +183,147 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         clipped(lastAssistantMessage)
     }
 
+    public var normalizedHookEventName: String {
+        hookEventName
+            .replacingOccurrences(of: "_", with: "")
+            .lowercased()
+    }
+
+    public var isInteractiveHookEvent: Bool {
+        switch normalizedHookEventName {
+        case "permissionrequest", "questionasked":
+            true
+        default:
+            false
+        }
+    }
+
+    public var effectiveToolInputPreview: String? {
+        if let preview = clipped(toolInputPreview) {
+            return preview
+        }
+
+        if case let .object(object) = toolInput {
+            let keyPriority = ["command", "file_path", "path", "pattern", "query", "prompt", "description", "url"]
+            for key in keyPriority {
+                if let value = object[key]?.stringValue, !value.isEmpty {
+                    return clipped(value)
+                }
+            }
+        }
+
+        return clipped(stringValue(for: toolInput))
+    }
+
+    public var permissionRequestTitle: String {
+        permissionTitle
+            ?? toolName.map { "Allow \($0)" }
+            ?? "Allow Qwen tool"
+    }
+
+    public var permissionRequestSummary: String {
+        if let permissionDescription = clipped(permissionDescription) {
+            return permissionDescription
+        }
+
+        if let questionText = clipped(questionText) {
+            return questionText
+        }
+
+        if let toolName {
+            return "Qwen wants to run \(toolName)."
+        }
+
+        return "Qwen needs permission to continue."
+    }
+
+    public var permissionAffectedPath: String {
+        if let explicitPath = extractedPathValue, !explicitPath.isEmpty {
+            return explicitPath
+        }
+
+        if let preview = effectiveToolInputPreview, !preview.isEmpty {
+            return preview
+        }
+
+        return cwd
+    }
+
+    public var questionPrompt: QuestionPrompt? {
+        guard let title = clipped(questionText) else {
+            return nil
+        }
+
+        return QuestionPrompt(title: title, options: [])
+    }
+
     private func clipped(_ string: String?) -> String? {
         guard let string else { return nil }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return String(trimmed.prefix(200))
+        let collapsed = string
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+
+        guard !collapsed.isEmpty else { return nil }
+
+        guard collapsed.count > 200 else {
+            return collapsed
+        }
+
+        let endIndex = collapsed.index(collapsed.startIndex, offsetBy: 199)
+        return "\(collapsed[..<endIndex])…"
+    }
+
+    private var extractedPathValue: String? {
+        guard case let .object(root) = toolInput else {
+            return nil
+        }
+
+        let candidateKeys = [
+            "file_path",
+            "path",
+            "notebook_path",
+            "target_file",
+            "working_directory",
+        ]
+
+        for key in candidateKeys {
+            if let value = root[key]?.stringValue, !value.isEmpty {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private func stringValue(for value: ClaudeHookJSONValue?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        switch value {
+        case let .string(text):
+            return text
+        case let .number(number):
+            return String(number)
+        case let .boolean(flag):
+            return flag ? "true" : "false"
+        case .null:
+            return "null"
+        case let .array(items):
+            return "[\(items.compactMap { stringValue(for: $0) }.joined(separator: ", "))]"
+        case let .object(object):
+            let rendered = object
+                .keys
+                .sorted()
+                .map { key in
+                    let value = stringValue(for: object[key]) ?? "null"
+                    return "\(key): \(value)"
+                }
+                .joined(separator: ", ")
+            return "{\(rendered)}"
+        }
     }
 
     public func withRuntimeContext(environment: [String: String]) -> QwenHookPayload {
@@ -416,4 +611,39 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         }
     }
 
+}
+
+public enum QwenHookOutputEncoder {
+    public static func standardOutput(for response: BridgeResponse) throws -> Data? {
+        guard case let .qwenHookDirective(directive) = response else {
+            return nil
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        let payload: Data
+        switch directive {
+        case .allow:
+            payload = try encoder.encode(QwenHookDirective.allow)
+        case let .deny(reason):
+            payload = try encoder.encode(QwenHookDirective.deny(reason: reason))
+        case let .answer(text):
+            payload = try encoder.encode(QwenHookDirective.answer(text: text))
+        }
+
+        var line = payload
+        line.append(UInt8(ascii: "\n"))
+        return line
+    }
+}
+
+private extension ClaudeHookJSONValue {
+    var stringValue: String? {
+        if case let .string(value) = self {
+            value
+        } else {
+            nil
+        }
+    }
 }

@@ -66,14 +66,23 @@ struct OpenIslandHooksCLI {
             case .qwen:
                 let payload = try decoder.decode(QwenHookPayload.self, from: input)
                     .withRuntimeContext(environment: ProcessInfo.processInfo.environment)
-                guard (try? client.send(.processQwenHook(payload), timeout: 45)) != nil else {
+
+                let timeout = payload.isInteractiveHookEvent
+                    ? interactiveClaudeHookTimeout
+                    : 45
+
+                guard let response = try? client.send(.processQwenHook(payload), timeout: timeout) else {
                     logStderr("bridge unavailable for qwen hook")
                     return
                 }
-                
-                // Return a JSON that tells the Qwen (Claude fork) CLI to continue normally.
-                let outputText = "{\"continue\":true,\"suppressOutput\":true}\n"
-                FileHandle.standardOutput.write(Data(outputText.utf8))
+
+                if let output = try QwenHookOutputEncoder.standardOutput(for: response) {
+                    FileHandle.standardOutput.write(output)
+                } else {
+                    // Fail open for non-blocking hook events.
+                    let outputText = "{\"continue\":true,\"suppressOutput\":true}\n"
+                    FileHandle.standardOutput.write(Data(outputText.utf8))
+                }
             case .cursor:
                 let payload = try decoder.decode(CursorHookPayload.self, from: input)
 

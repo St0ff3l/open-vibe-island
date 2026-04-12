@@ -41,6 +41,16 @@ public final class BridgeServer: @unchecked Sendable {
         let kind: Kind
     }
 
+    private struct PendingQwenInteraction {
+        enum Kind {
+            case permission(QwenHookPayload)
+            case question(QwenHookPayload)
+        }
+
+        let clientID: UUID
+        let kind: Kind
+    }
+
     private struct Listener {
         let fileDescriptor: Int32
         let acceptSource: DispatchSourceRead
@@ -63,6 +73,7 @@ public final class BridgeServer: @unchecked Sendable {
     private var pendingClaudeInteractions: [String: PendingClaudeInteraction] = [:]
     private var pendingOpenCodeInteractions: [String: PendingOpenCodeInteraction] = [:]
     private var pendingCursorInteractions: [String: PendingCursorInteraction] = [:]
+    private var pendingQwenInteractions: [String: PendingQwenInteraction] = [:]
     /// Caches Agent tool description from preToolUse for use by the next subagentStart.
     private var pendingAgentDescriptions: [String: String] = [:]
     /// Maps toolUseID → temporary task ID for TaskCreate, so postToolUse can update with real ID.
@@ -177,6 +188,7 @@ public final class BridgeServer: @unchecked Sendable {
         pendingClaudeToolContexts.removeAll()
         pendingOpenCodeInteractions.removeAll()
         pendingCursorInteractions.removeAll()
+        pendingQwenInteractions.removeAll()
 
         let activeConnections = Array(clients.values)
         activeConnections.forEach { $0.readSource.cancel() }
@@ -331,6 +343,12 @@ public final class BridgeServer: @unchecked Sendable {
                 return
             }
 
+            if pendingQwenInteractions[sessionID] != nil {
+                resolvePendingQwenInteraction(sessionID: sessionID, resolution: resolution)
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
             if let interaction = pendingCursorInteractions.removeValue(forKey: sessionID) {
                 let directive: CursorHookDirective
                 let summary: String
@@ -401,6 +419,12 @@ public final class BridgeServer: @unchecked Sendable {
 
             if pendingOpenCodeInteractions[sessionID] != nil {
                 resolvePendingOpenCodeQuestion(sessionID: sessionID, response: response)
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
+            if pendingQwenInteractions[sessionID] != nil {
+                resolvePendingQwenQuestion(sessionID: sessionID, response: response)
                 send(.response(.acknowledged), to: clientID)
                 return
             }
@@ -1166,13 +1190,15 @@ public final class BridgeServer: @unchecked Sendable {
 
         synchronizeQwenMetadata(for: payload)
 
-        let lowercasedEvent = payload.hookEventName.lowercased()
+        let lowercasedEvent = payload.normalizedHookEventName
 
         switch lowercasedEvent {
-        case "sessionstart", "session_start":
+        case "sessionstart":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             // Already handled above
             break
-        case "userpromptsubmit", "user_prompt_submit":
+        case "userpromptsubmit":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .activityUpdated(
                     SessionActivityUpdated(
@@ -1184,6 +1210,7 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "notification":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             let currentPhase = localState.session(id: payload.sessionID)?.phase ?? .completed
             let notificationPhase: SessionPhase
             let message = payload.message ?? payload.title ?? ""
@@ -1203,13 +1230,12 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
-        case "pretooluse", "pre_tool_use":
+        case "pretooluse":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             let summary: String
-            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
-            let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
             if let toolName = payload.toolName {
-                if let input = validToolInput, !input.isEmpty {
+                if let input = payload.effectiveToolInputPreview, !input.isEmpty {
                     summary = "Running \(toolName): \(input)"
                 } else {
                     summary = "Running \(toolName)"
@@ -1228,7 +1254,8 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
-        case "posttooluse", "post_tool_use":
+        case "posttooluse":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             let summary = payload.toolName.map { "\($0) finished." } ?? "Qwen tool finished."
             emit(
                 .activityUpdated(
@@ -1240,7 +1267,52 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
+        case "permissionrequest":
+            emit(
+                .permissionRequested(
+                    PermissionRequested(
+                        sessionID: payload.sessionID,
+                        request: PermissionRequest(
+                            title: payload.permissionRequestTitle,
+                            summary: payload.permissionRequestSummary,
+                            affectedPath: payload.permissionAffectedPath,
+                            primaryActionTitle: "Allow",
+                            secondaryActionTitle: "Deny",
+                            toolName: payload.toolName
+                        ),
+                        timestamp: .now
+                    )
+                )
+            )
+
+            pendingQwenInteractions[payload.sessionID] = PendingQwenInteraction(
+                clientID: clientID,
+                kind: .permission(payload)
+            )
+            return
+        case "questionasked":
+            let questionPrompt = payload.questionPrompt ?? QuestionPrompt(
+                title: payload.questionText ?? "Qwen has a question for you.",
+                options: []
+            )
+
+            emit(
+                .questionAsked(
+                    QuestionAsked(
+                        sessionID: payload.sessionID,
+                        prompt: questionPrompt,
+                        timestamp: .now
+                    )
+                )
+            )
+
+            pendingQwenInteractions[payload.sessionID] = PendingQwenInteraction(
+                clientID: clientID,
+                kind: .question(payload)
+            )
+            return
         case "stop":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .sessionCompleted(
                     SessionCompleted(
@@ -1251,7 +1323,8 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
-        case "stopfailure", "stop_failure":
+        case "stopfailure":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .sessionCompleted(
                     SessionCompleted(
@@ -1262,7 +1335,8 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
             )
-        case "sessionend", "session_end":
+        case "sessionend":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .sessionCompleted(
                     SessionCompleted(
@@ -1734,6 +1808,105 @@ public final class BridgeServer: @unchecked Sendable {
         )
     }
 
+    private func clearStaleQwenInteractionIfNeeded(for sessionID: String) {
+        guard pendingQwenInteractions.removeValue(forKey: sessionID) != nil else {
+            return
+        }
+
+        emit(
+            .actionableStateResolved(
+                ActionableStateResolved(
+                    sessionID: sessionID,
+                    summary: "Approval was handled outside Open Island.",
+                    timestamp: .now
+                )
+            )
+        )
+    }
+
+    private func resolvePendingQwenInteraction(
+        sessionID: String,
+        resolution: PermissionResolution
+    ) {
+        guard let pendingInteraction = pendingQwenInteractions.removeValue(forKey: sessionID) else {
+            return
+        }
+
+        let directive: QwenHookDirective
+        let summary: String
+        let phase: SessionPhase
+
+        switch (pendingInteraction.kind, resolution) {
+        case let (.permission(payload), .allowOnce):
+            directive = .allow
+            summary = payload.toolName.map { "Permission approved for \($0)." } ?? "Permission approved."
+            phase = .running
+
+        case let (.permission(_), .deny(message, _)):
+            directive = .deny(reason: message ?? "Permission denied in Open Island.")
+            summary = message ?? "Permission denied in Open Island."
+            phase = .completed
+
+        case (.question, .allowOnce):
+            directive = .allow
+            summary = "Qwen's question was answered."
+            phase = .running
+
+        case let (.question(_), .deny(message, _)):
+            directive = .deny(reason: message ?? "Declined to answer.")
+            summary = message ?? "Declined to answer."
+            phase = .completed
+        }
+
+        emit(
+            phase == .completed
+                ? .sessionCompleted(
+                    SessionCompleted(
+                        sessionID: sessionID,
+                        summary: summary,
+                        timestamp: .now
+                    )
+                )
+                : .activityUpdated(
+                    SessionActivityUpdated(
+                        sessionID: sessionID,
+                        summary: summary,
+                        phase: phase,
+                        timestamp: .now
+                    )
+                )
+        )
+
+        send(.response(.qwenHookDirective(directive)), to: pendingInteraction.clientID)
+    }
+
+    private func resolvePendingQwenQuestion(
+        sessionID: String,
+        response: QuestionPromptResponse
+    ) {
+        guard let pendingInteraction = pendingQwenInteractions.removeValue(forKey: sessionID) else {
+            return
+        }
+
+        let answerText = response.rawAnswer ?? response.displaySummary
+        let summary = answerText.isEmpty
+            ? "Answered Qwen's question."
+            : "Answered: \(answerText)"
+
+        emit(
+            .activityUpdated(
+                SessionActivityUpdated(
+                    sessionID: sessionID,
+                    summary: summary,
+                    phase: .running,
+                    timestamp: .now
+                )
+            )
+        )
+
+        send(.response(.qwenHookDirective(.answer(text: answerText))), to: pendingInteraction.clientID)
+    }
+
     private func clearStaleClaudeInteractionIfNeeded(for sessionID: String) {
         guard pendingClaudeInteractions.removeValue(forKey: sessionID) != nil else {
             return
@@ -1972,9 +2145,9 @@ public final class BridgeServer: @unchecked Sendable {
             activeTasks: []
         )
 
-        let lowercasedEvent = payload.hookEventName.lowercased()
+        let lowercasedEvent = payload.normalizedHookEventName
         
-        if lowercasedEvent == "user_prompt_submit" || lowercasedEvent == "userpromptsubmit" || lowercasedEvent == "sessionstart" || lowercasedEvent == "session_start" {
+        if lowercasedEvent == "userpromptsubmit" || lowercasedEvent == "sessionstart" {
             if let prompt = validPrompt {
                 if mergedMetadata.initialUserPrompt == nil {
                     mergedMetadata.initialUserPrompt = prompt
@@ -1996,16 +2169,10 @@ public final class BridgeServer: @unchecked Sendable {
         }
 
         switch lowercasedEvent {
-        case "pretooluse", "pre_tool_use":
+        case "pretooluse":
             mergedMetadata.currentTool = payload.toolName
-            // Use tool_input, tool_input_preview, message, prompt, or title as the tool input preview if available
-            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
-            if let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines), !validToolInput.isEmpty {
-                // If it looks like a JSON string but we want it compact, maybe we just keep it as is.
-                // The UI will trim it to 200 chars anyway.
-                mergedMetadata.currentToolInputPreview = validToolInput
-            }
-        case "posttooluse", "post_tool_use", "stop", "stopfailure", "stop_failure", "sessionend", "session_end":
+            mergedMetadata.currentToolInputPreview = payload.effectiveToolInputPreview
+        case "posttooluse", "stop", "stopfailure", "sessionend":
             mergedMetadata.currentTool = nil
             mergedMetadata.currentToolInputPreview = nil
         default:
@@ -2604,6 +2771,24 @@ public final class BridgeServer: @unchecked Sendable {
 
         for sessionID in pendingCursorSessionIDs {
             pendingCursorInteractions.removeValue(forKey: sessionID)
+            emit(
+                .actionableStateResolved(
+                    ActionableStateResolved(
+                        sessionID: sessionID,
+                        summary: "Hook process disconnected.",
+                        timestamp: .now
+                    )
+                )
+            )
+        }
+
+        let pendingQwenSessionIDs = pendingQwenInteractions.compactMap { entry -> String? in
+            let (sessionID, pendingInteraction) = entry
+            return pendingInteraction.clientID == clientID ? sessionID : nil
+        }
+
+        for sessionID in pendingQwenSessionIDs {
+            pendingQwenInteractions.removeValue(forKey: sessionID)
             emit(
                 .actionableStateResolved(
                     ActionableStateResolved(
