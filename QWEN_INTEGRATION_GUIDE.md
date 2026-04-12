@@ -12,15 +12,14 @@ Open Island tracks CLI agents using two distinct and parallel systems:
 CLI tools like `qwen-cli` are frequently invoked via Node.js package managers (`npx`, `bun`, `npm`, `yarn`, `pnpm`). These wrappers create deeply nested process trees. Process polling can easily miss the actual agent process for a few seconds during high CPU load or complex package manager resolutions.
 
 *   **Previous Behavior**: If the poller missed a process twice (about 4 seconds), the State Machine forcefully marked the session as `isSessionEnded = true` and `phase = .completed`. This caused the UI card to unexpectedly disappear ("flash" out of existence) right in the middle of a task, only to reappear when the actual `sessionend` hook finally arrived.
-*   **The Solution (Hook Trust)**: We shifted the source of truth for visibility. If a session is `isHookManaged == true` (meaning it originated from a Socket Hook), the State Machine **absolutely trusts the Hook over the Process Poller**. We no longer forcefully complete a hook-managed session due to a polling miss. 
-    *   *Implementation*: In `SessionState.markProcessLiveness()`, we only update `isProcessAlive` but leave the phase intact. A 60-second inactivity timeout acts as the ultimate fallback if the terminal crashes without sending a `sessionend` hook.
+*   **The Solution (Hook Fallback)**: Hook-managed sessions primarily rely on hook lifecycle signals (`SessionStart` / `SessionEnd`). However, if the terminal crashes or the bridge becomes unavailable, the `sessionend` hook may never arrive, leaving the session permanently stuck as visible. As a fallback, we check process liveness: when the agent process is confirmed dead by two consecutive polls, we forcefully mark the session ended (`isSessionEnded = true`, `phase = .completed`) so it can be cleaned up and smoothly animate out.
 
 ## 2. Process Identification Details
 
 To successfully map a Qwen terminal window to its UI card, `ActiveAgentProcessDiscovery.swift` handles several edge cases:
 
-*   **Package Manager Penetration**: The `isClaudeProcess` matcher now accepts commands starting with `node`, `npx`, `bun`, `npm`, `pnpm`, or `yarn`, as long as `qwen` or `qwen-cli` is present later in the argument list.
-*   **Transcript Segregation**: Claude Code and Qwen Code use different local storage paths. The discovery engine's `bestClaudeTranscriptPath` now merges searches across both `/.claude/projects/` and `/.qwen/projects/` to accurately find `.jsonl` files without cross-contamination.
+*   **Package Manager Penetration**: The `isAgentProcess` matcher accepts commands starting with `node`, `npx`, `bun`, `npm`, `pnpm`, or `yarn`, as long as the relevant agent executable name (for example `qwen` or `qwen-cli`) appears later in the argument list.
+*   **Transcript Segregation**: Claude Code and Qwen Code use different local storage paths. The discovery engine's `bestClaudeTranscriptPath` selects the appropriate project root based on `isQwen` (for example `/.claude/projects/` vs `/.qwen/projects/`) rather than merging searches across both trees, which avoids cross-contamination.
 
 ## 3. UI Lifecycle & The "Zombie Session" Prevention
 
