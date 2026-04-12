@@ -390,6 +390,14 @@ public struct SessionState: Equatable, Sendable {
     /// Remove sessions that are no longer visible in the island.
     /// Returns `true` if any sessions were removed.
     @discardableResult
+    public mutating func removeInvisibleSessions() -> Bool {
+        let before = sessionsByID.count
+        sessionsByID = sessionsByID.filter { _, session in
+            session.isVisibleInIsland || session.isProcessAlive
+        }
+        return sessionsByID.count != before
+    }
+
     /// Manually mark a session as completed and ended.
     /// Intended for remote sessions whose SSH tunnel dropped without a
     /// SessionEnd hook.
@@ -399,14 +407,6 @@ public struct SessionState: Equatable, Sendable {
         session.phase = .completed
         session.updatedAt = .now
         upsert(session)
-    }
-
-    public mutating func removeInvisibleSessions() -> Bool {
-        let before = sessionsByID.count
-        sessionsByID = sessionsByID.filter { _, session in
-            session.isVisibleInIsland || session.isProcessAlive
-        }
-        return sessionsByID.count != before
     }
 
     private mutating func upsert(_ session: AgentSession) {

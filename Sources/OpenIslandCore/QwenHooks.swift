@@ -203,7 +203,7 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
             return preview
         }
 
-        if case let .object(object) = toolInput {
+        if let object = parsedToolInputObject {
             let keyPriority = ["command", "file_path", "path", "pattern", "query", "prompt", "description", "url"]
             for key in keyPriority {
                 if let value = object[key]?.stringValue, !value.isEmpty {
@@ -213,6 +213,26 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
         }
 
         return clipped(stringValue(for: toolInput))
+    }
+
+    private var parsedToolInputObject: [String: ClaudeHookJSONValue]? {
+        guard let toolInput else { return nil }
+        
+        // If it's already parsed as a JSON object, use it directly
+        if case let .object(object) = toolInput {
+            return object
+        }
+        
+        // Qwen CLI might pass the entire JSON blob inside a single string.
+        // Let's try to decode the string itself.
+        if case let .string(jsonString) = toolInput,
+           let data = jsonString.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(ClaudeHookJSONValue.self, from: data),
+           case let .object(object) = decoded {
+            return object
+        }
+        
+        return nil
     }
 
     public var permissionRequestTitle: String {
@@ -276,7 +296,7 @@ public struct QwenHookPayload: Equatable, Codable, Sendable {
     }
 
     private var extractedPathValue: String? {
-        guard case let .object(root) = toolInput else {
+        guard let root = parsedToolInputObject else {
             return nil
         }
 

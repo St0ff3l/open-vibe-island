@@ -585,13 +585,51 @@ final class OverlayPanelController {
     private func actionableBodyHeight(for session: AgentSession, model: AppModel) -> CGFloat {
         switch session.phase {
         case .waitingForApproval:
-            return Self.approvalCardHeight - 44
+            return approvalBodyHeight(for: session)
         case .waitingForAnswer:
-            return questionCardHeight(for: session.questionPrompt) - 44
+            return questionBodyHeight(for: session.questionPrompt)
         case .completed:
             return completionBodyHeight(for: session)
         case .running:
             return 0
+        }
+    }
+
+    private func approvalBodyHeight(for session: AgentSession) -> CGFloat {
+        let preview = session.currentCommandPreviewText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = preview?.isEmpty == false ? "$ \(preview!)" : (session.permissionRequest?.summary ?? session.summary)
+        
+        let availableWidth = Self.preferredNotificationPanelWidth - 96
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+        let textSize = (text as NSString).boundingRect(
+            with: NSSize(width: availableWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        
+        let baseHeight: CGFloat = 126 // 16(label) + 14(path) + 24(padding) + 36(buttons) + 36(spacing)
+        return baseHeight + ceil(textSize.height)
+    }
+
+    private func questionBodyHeight(for prompt: QuestionPrompt?) -> CGFloat {
+        guard let prompt else { return Self.questionCardHeight - 44 }
+        
+        let titleText = prompt.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let availableWidth = Self.preferredNotificationPanelWidth - 64
+        let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let titleSize = (titleText as NSString).boundingRect(
+            with: NSSize(width: availableWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        let titleHeight = ceil(titleSize.height) + 12
+        
+        if !prompt.questions.isEmpty {
+            return min(320, titleHeight + CGFloat(prompt.questions.count * 60) + 40)
+        } else if prompt.options.isEmpty {
+            return titleHeight + 88 // TextField + Button
+        } else {
+            return titleHeight + 36 // Buttons
         }
     }
 
