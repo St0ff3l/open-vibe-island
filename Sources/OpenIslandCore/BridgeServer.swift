@@ -1191,14 +1191,13 @@ public final class BridgeServer: @unchecked Sendable {
         synchronizeQwenMetadata(for: payload)
 
         let lowercasedEvent = payload.normalizedHookEventName
+        let hasPendingInteraction = pendingQwenInteractions[payload.sessionID] != nil
 
         switch lowercasedEvent {
         case "sessionstart":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             // Already handled above
             break
         case "userpromptsubmit":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .activityUpdated(
                     SessionActivityUpdated(
@@ -1210,7 +1209,11 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "notification":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
+            if hasPendingInteraction {
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
             let currentPhase = localState.session(id: payload.sessionID)?.phase ?? .completed
             let notificationPhase: SessionPhase
             let message = payload.message ?? payload.title ?? ""
@@ -1268,6 +1271,7 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "permissionrequest":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             emit(
                 .permissionRequested(
                     PermissionRequested(
@@ -1291,6 +1295,7 @@ public final class BridgeServer: @unchecked Sendable {
             )
             return
         case "questionasked":
+            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
             let questionPrompt = payload.questionPrompt ?? QuestionPrompt(
                 title: payload.questionText ?? "Qwen has a question for you.",
                 options: []
@@ -1312,7 +1317,11 @@ public final class BridgeServer: @unchecked Sendable {
             )
             return
         case "stop":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
+            if hasPendingInteraction {
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
             emit(
                 .sessionCompleted(
                     SessionCompleted(
@@ -1324,7 +1333,11 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "stopfailure":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
+            if hasPendingInteraction {
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
             emit(
                 .sessionCompleted(
                     SessionCompleted(
@@ -1336,7 +1349,11 @@ public final class BridgeServer: @unchecked Sendable {
                 )
             )
         case "sessionend":
-            clearStaleQwenInteractionIfNeeded(for: payload.sessionID)
+            if hasPendingInteraction {
+                send(.response(.acknowledged), to: clientID)
+                return
+            }
+
             emit(
                 .sessionCompleted(
                     SessionCompleted(

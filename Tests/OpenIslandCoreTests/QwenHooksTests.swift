@@ -110,6 +110,108 @@ struct QwenHooksTests {
     }
 
     @Test
+    func qwenNotificationDoesNotResolvePendingPermission() async throws {
+        let socketURL = BridgeSocketLocation.uniqueTestURL()
+        let server = BridgeServer(socketURL: socketURL)
+        try server.start()
+        defer { server.stop() }
+
+        let observer = LocalBridgeClient(socketURL: socketURL)
+        let stream = try observer.connect()
+        defer { observer.disconnect() }
+        try await observer.send(.registerClient(role: .observer))
+
+        let permissionPayload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "permission_request",
+            sessionID: "qwen-pending-notification",
+            toolName: "WriteFile",
+            toolInput: .object(["file_path": .string("/tmp/worktree/file.txt")]),
+            permissionDescription: "Qwen wants to write a file."
+        )
+
+        async let responseTask = sendOnGCDThread(.processQwenHook(permissionPayload), socketURL: socketURL)
+
+        var iterator = stream.makeAsyncIterator()
+        _ = try await nextMatchingEvent(from: &iterator, maxEvents: 8) { event in
+            if case .permissionRequested = event {
+                return true
+            }
+            return false
+        }
+
+        let notificationPayload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "notification",
+            sessionID: "qwen-pending-notification",
+            message: "Still waiting for user confirmation."
+        )
+        let notificationResponse = try BridgeCommandClient(socketURL: socketURL).send(.processQwenHook(notificationPayload))
+        #expect(notificationResponse == .acknowledged)
+
+        try await observer.send(
+            .resolvePermission(
+                sessionID: "qwen-pending-notification",
+                resolution: .allowOnce()
+            )
+        )
+
+        let response = try await responseTask
+        #expect(response == .qwenHookDirective(.allow))
+    }
+
+    @Test
+    func qwenStopDoesNotResolvePendingPermission() async throws {
+        let socketURL = BridgeSocketLocation.uniqueTestURL()
+        let server = BridgeServer(socketURL: socketURL)
+        try server.start()
+        defer { server.stop() }
+
+        let observer = LocalBridgeClient(socketURL: socketURL)
+        let stream = try observer.connect()
+        defer { observer.disconnect() }
+        try await observer.send(.registerClient(role: .observer))
+
+        let permissionPayload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "permission_request",
+            sessionID: "qwen-pending-stop",
+            toolName: "WriteFile",
+            toolInput: .object(["file_path": .string("/tmp/worktree/file.txt")]),
+            permissionDescription: "Qwen wants to write a file."
+        )
+
+        async let responseTask = sendOnGCDThread(.processQwenHook(permissionPayload), socketURL: socketURL)
+
+        var iterator = stream.makeAsyncIterator()
+        _ = try await nextMatchingEvent(from: &iterator, maxEvents: 8) { event in
+            if case .permissionRequested = event {
+                return true
+            }
+            return false
+        }
+
+        let stopPayload = QwenHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: "stop",
+            sessionID: "qwen-pending-stop",
+            lastAssistantMessage: "Should not mark completed while approval is pending."
+        )
+        let stopResponse = try BridgeCommandClient(socketURL: socketURL).send(.processQwenHook(stopPayload))
+        #expect(stopResponse == .acknowledged)
+
+        try await observer.send(
+            .resolvePermission(
+                sessionID: "qwen-pending-stop",
+                resolution: .allowOnce()
+            )
+        )
+
+        let response = try await responseTask
+        #expect(response == .qwenHookDirective(.allow))
+    }
+
+    @Test
     func qwenQuestionAskedReturnsAnswerDirectiveAfterResponse() async throws {
         let socketURL = BridgeSocketLocation.uniqueTestURL()
         let server = BridgeServer(socketURL: socketURL)
