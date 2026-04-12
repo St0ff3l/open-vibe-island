@@ -10,6 +10,18 @@ final class AppModel {
     private static let soundMutedDefaultsKey = "overlay.sound.muted"
     private static let showDockIconDefaultsKey = "app.showDockIcon"
     private static let hapticFeedbackEnabledDefaultsKey = "app.hapticFeedbackEnabled"
+    private static let islandAppearanceModeDefaultsKey = "appearance.island.mode"
+    private static let islandClosedDisplayStyleDefaultsKey = "appearance.island.closedDisplayStyle"
+    private static let islandHideIdleToEdgeDefaultsKey = "appearance.island.hideIdleToEdge"
+    private static let islandPixelShapeStyleDefaultsKey = "appearance.island.pixelShapeStyle"
+    private static let islandStatusColorsDefaultsKey = "appearance.island.statusColors"
+
+    static let defaultStatusColors: [SessionPhase: String] = [
+        .running: "#6E9FFF",
+        .waitingForApproval: "#FFB547",
+        .waitingForAnswer: "#FFD95A",
+        .completed: "#42E86B",
+    ]
     private static let syntheticClaudeSessionPrefix = "claude-process:"
     private static let liveSessionStalenessWindow: TimeInterval = 15 * 60
     private static let jumpOverlayDismissLeadTime: Duration = .milliseconds(20)
@@ -196,11 +208,168 @@ final class AppModel {
         get { overlay.overlayDisplaySelectionID }
         set { overlay.overlayDisplaySelectionID = newValue }
     }
+
+    // MARK: - Appearance
+
+    var islandAppearanceMode: IslandAppearanceMode = .default {
+        didSet {
+            guard islandAppearanceMode != oldValue else { return }
+            UserDefaults.standard.set(islandAppearanceMode.rawValue, forKey: Self.islandAppearanceModeDefaultsKey)
+            refreshOverlayPlacementIfVisible()
+        }
+    }
+
+    var isCustomAppearance: Bool { islandAppearanceMode == .custom }
+
+    var islandClosedDisplayStyle: IslandClosedDisplayStyle = .detailed {
+        didSet {
+            guard islandClosedDisplayStyle != oldValue else { return }
+            UserDefaults.standard.set(islandClosedDisplayStyle.rawValue, forKey: Self.islandClosedDisplayStyleDefaultsKey)
+            refreshOverlayPlacementIfVisible()
+        }
+    }
+    var hideIdleIslandToEdge: Bool = false {
+        didSet {
+            guard hideIdleIslandToEdge != oldValue else { return }
+            UserDefaults.standard.set(hideIdleIslandToEdge, forKey: Self.islandHideIdleToEdgeDefaultsKey)
+            refreshOverlayPlacementIfVisible()
+        }
+    }
+    var islandPixelShapeStyle: IslandPixelShapeStyle = .bars {
+        didSet {
+            guard islandPixelShapeStyle != oldValue else { return }
+            UserDefaults.standard.set(islandPixelShapeStyle.rawValue, forKey: Self.islandPixelShapeStyleDefaultsKey)
+        }
+    }
+    var statusColorHexes: [SessionPhase: String] = AppModel.defaultStatusColors {
+        didSet {
+            guard statusColorHexes != oldValue else { return }
+            let encoded = statusColorHexes.reduce(into: [String: String]()) { $0[$1.key.rawValue] = $1.value }
+            UserDefaults.standard.set(encoded, forKey: Self.islandStatusColorsDefaultsKey)
+            _cachedStatusColors = [:]
+        }
+    }
+    var customAvatarImage: NSImage? = nil
+    private var _cachedStatusColors: [SessionPhase: Color] = [:]
+
+    func statusColor(for phase: SessionPhase) -> Color {
+        if let cached = _cachedStatusColors[phase] { return cached }
+        let hex = statusColorHexes[phase] ?? Self.defaultStatusColors[phase] ?? "#6E9FFF"
+        let color = Color(hex: hex) ?? .white
+        _cachedStatusColors[phase] = color
+        return color
+    }
+
+    func setStatusColor(_ color: Color, for phase: SessionPhase) {
+        guard let hex = color.opaqueHexString else { return }
+        statusColorHexes[phase] = hex
+    }
+
+    var showsIdleEdgeWhenCollapsed: Bool {
+        hideIdleIslandToEdge && notchStatus == .closed
+    }
+
+    func importCustomAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            customAvatarImage = try AvatarImageStore.importImage(from: url)
+            islandPixelShapeStyle = .custom
+        } catch {
+            lastActionMessage = error.localizedDescription
+        }
+    }
+
+    func removeCustomAvatar() {
+        do {
+            try AvatarImageStore.removeCurrentImage()
+            customAvatarImage = nil
+            if islandPixelShapeStyle == .custom {
+                islandPixelShapeStyle = .bars
+            }
+        } catch {
+            lastActionMessage = error.localizedDescription
+        }
+    }
+
     @ObservationIgnored
     var openSettingsWindow: (() -> Void)?
 
     @ObservationIgnored
     private var hasFinishedInit = false
+
+    // MARK: - Watch Notification
+
+    private static let watchNotificationEnabledKey = "watch.notification.enabled"
+
+    var watchNotificationEnabled: Bool = false {
+        didSet {
+            guard watchNotificationEnabled != oldValue else { return }
+            UserDefaults.standard.set(watchNotificationEnabled, forKey: Self.watchNotificationEnabledKey)
+            if watchNotificationEnabled {
+                startWatchRelay()
+            } else {
+                stopWatchRelay()
+            }
+        }
+    }
+
+    @ObservationIgnored
+    private(set) var watchRelay: WatchNotificationRelay?
+
+    /// Current pairing code for display in the settings UI.
+    var watchPairingCode: String {
+        watchRelay?.endpoint.currentCode() ?? "----"
+    }
+
+    /// Number of currently connected iPhone SSE clients.
+    var watchConnectedDevices: Int {
+        // Placeholder — endpoint doesn't expose count yet
+        0
+    }
+
+    private func startWatchRelay() {
+        guard watchRelay == nil else { return }
+        let relay = WatchNotificationRelay()
+        setupWatchRelayCallbacks(relay)
+        relay.start()
+        self.watchRelay = relay
+    }
+
+    /// Wire up resolution callbacks so Watch/iPhone actions flow back to the bridge.
+    private func setupWatchRelayCallbacks(_ relay: WatchNotificationRelay) {
+        relay.onResolvePermission = { [weak self] sessionID, approved in
+            Task { @MainActor [weak self] in
+                self?.approvePermission(for: sessionID, approved: approved)
+            }
+        }
+
+        relay.onAnswerQuestion = { [weak self] sessionID, answer in
+            Task { @MainActor [weak self] in
+                self?.answerQuestion(
+                    for: sessionID,
+                    answer: QuestionPromptResponse(answer: answer)
+                )
+            }
+        }
+
+        relay.endpoint.activeSessionCountProvider = { [weak self] in
+            // Safe to call from any queue — reads a snapshot count.
+            guard let self else { return 0 }
+            return MainActor.assumeIsolated {
+                self.state.sessions.count
+            }
+        }
+    }
+
+    private func stopWatchRelay() {
+        watchRelay?.stop()
+        watchRelay = nil
+    }
 
     var ignoresPointerExitDuringHarness = false
     var disablesOverlayEventMonitoringDuringHarness = false
@@ -245,6 +414,30 @@ final class AppModel {
         selectedSoundName = NotificationSoundService.selectedSoundName
         showDockIcon = UserDefaults.standard.bool(forKey: Self.showDockIconDefaultsKey)
         hapticFeedbackEnabled = UserDefaults.standard.bool(forKey: Self.hapticFeedbackEnabledDefaultsKey)
+        islandAppearanceMode = IslandAppearanceMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.islandAppearanceModeDefaultsKey) ?? ""
+        ) ?? .default
+        islandClosedDisplayStyle = IslandClosedDisplayStyle(
+            rawValue: UserDefaults.standard.string(forKey: Self.islandClosedDisplayStyleDefaultsKey) ?? ""
+        ) ?? .detailed
+        hideIdleIslandToEdge = UserDefaults.standard.bool(forKey: Self.islandHideIdleToEdgeDefaultsKey)
+        islandPixelShapeStyle = IslandPixelShapeStyle(
+            rawValue: UserDefaults.standard.string(forKey: Self.islandPixelShapeStyleDefaultsKey) ?? ""
+        ) ?? .bars
+        customAvatarImage = AvatarImageStore.currentImage()
+        if let saved = UserDefaults.standard.dictionary(forKey: Self.islandStatusColorsDefaultsKey) as? [String: String] {
+            var colors = Self.defaultStatusColors
+            for (key, value) in saved {
+                if let phase = SessionPhase(rawValue: key) {
+                    colors[phase] = value.normalizedHexColorString
+                }
+            }
+            statusColorHexes = colors
+        }
+        watchNotificationEnabled = UserDefaults.standard.bool(forKey: Self.watchNotificationEnabledKey)
+        if watchNotificationEnabled {
+            startWatchRelay()
+        }
 
         overlay.appModel = self
         overlay.restoreDisplayPreference()
@@ -885,6 +1078,27 @@ final class AppModel {
         discovery.scheduleClaudeSessionPersistence()
         discovery.scheduleCursorSessionPersistence()
 
+        // Push relevant events to the Watch/iPhone via the relay
+        if let relay = watchRelay {
+            let eventSessionID: String? = {
+                switch event {
+                case let .sessionStarted(p): return p.sessionID
+                case let .activityUpdated(p): return p.sessionID
+                case let .permissionRequested(p): return p.sessionID
+                case let .questionAsked(p): return p.sessionID
+                case let .sessionCompleted(p): return p.sessionID
+                case let .jumpTargetUpdated(p): return p.sessionID
+                case let .sessionMetadataUpdated(p): return p.sessionID
+                case let .claudeSessionMetadataUpdated(p): return p.sessionID
+                case let .openCodeSessionMetadataUpdated(p): return p.sessionID
+                case let .cursorSessionMetadataUpdated(p): return p.sessionID
+                case let .actionableStateResolved(p): return p.sessionID
+                }
+            }()
+            let session = eventSessionID.flatMap { state.session(id: $0) }
+            relay.notifyEvent(event, session: session)
+        }
+
         if updateLastActionMessage {
             lastActionMessage = describe(event)
         }
@@ -1116,4 +1330,34 @@ final class AppModel {
         NSApplication.shared.terminate(nil)
     }
 
+}
+
+// MARK: - Hex color helpers
+
+extension String {
+    var normalizedHexColorString: String {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard raw.count == 6, raw.allSatisfy(\.isHexDigit) else { return "#6E9FFF" }
+        return "#\(raw.uppercased())"
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        let raw = String(hex.normalizedHexColorString.dropFirst())
+        guard let value = Int(raw, radix: 16) else { return nil }
+        let red = Double((value >> 16) & 0xFF) / 255
+        let green = Double((value >> 8) & 0xFF) / 255
+        let blue = Double(value & 0xFF) / 255
+        self = Color(red: red, green: green, blue: blue)
+    }
+
+    var opaqueHexString: String? {
+        guard let nsColor = NSColor(self).usingColorSpace(.deviceRGB) else { return nil }
+        let r = Int(round(nsColor.redComponent * 255))
+        let g = Int(round(nsColor.greenComponent * 255))
+        let b = Int(round(nsColor.blueComponent * 255))
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
 }
