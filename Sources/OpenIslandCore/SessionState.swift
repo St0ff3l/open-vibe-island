@@ -151,6 +151,7 @@ public struct SessionState: Equatable, Sendable {
             session.updatedAt = payload.timestamp
             if payload.isSessionEnd == true {
                 session.isSessionEnded = true
+                session.isProcessAlive = false
             }
             upsert(session)
 
