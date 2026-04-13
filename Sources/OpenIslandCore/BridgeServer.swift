@@ -1197,7 +1197,7 @@ public final class BridgeServer: @unchecked Sendable {
                 .activityUpdated(
                     SessionActivityUpdated(
                         sessionID: payload.sessionID,
-                        summary: payload.promptPreview ?? payload.implicitStartSummary,
+                        summary: payload.assistantMessagePreview ?? payload.promptPreview ?? payload.implicitStartSummary,
                         phase: notificationPhase,
                         timestamp: .now
                     )
@@ -1205,7 +1205,7 @@ public final class BridgeServer: @unchecked Sendable {
             )
         case "pretooluse", "pre_tool_use":
             let summary: String
-            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
+            let toolInput: String? = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
             let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines)
             
             if let toolName = payload.toolName {
@@ -1940,7 +1940,7 @@ public final class BridgeServer: @unchecked Sendable {
 
         let lowercasedEvent = payload.hookEventName.lowercased()
         
-        if lowercasedEvent == "user_prompt_submit" || lowercasedEvent == "userpromptsubmit" {
+        if lowercasedEvent == "user_prompt_submit" || lowercasedEvent == "userpromptsubmit" || lowercasedEvent == "sessionstart" || lowercasedEvent == "session_start" {
             if let prompt = validPrompt {
                 if mergedMetadata.initialUserPrompt == nil {
                     mergedMetadata.initialUserPrompt = prompt
@@ -1965,7 +1965,7 @@ public final class BridgeServer: @unchecked Sendable {
         case "pretooluse", "pre_tool_use":
             mergedMetadata.currentTool = payload.toolName
             // Use tool_input, tool_input_preview, message, prompt, or title as the tool input preview if available
-            let toolInput = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
+            let toolInput: String? = payload.toolInput ?? payload.toolInputPreview ?? payload.message ?? payload.prompt ?? payload.title
             if let validToolInput = toolInput?.trimmingCharacters(in: .whitespacesAndNewlines), !validToolInput.isEmpty {
                 // If it looks like a JSON string but we want it compact, maybe we just keep it as is.
                 // The UI will trim it to 200 chars anyway.
